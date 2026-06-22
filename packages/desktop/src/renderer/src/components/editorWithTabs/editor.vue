@@ -131,7 +131,8 @@ import { isOsx, animatedScrollTo } from '@/util'
 import { moveImageToFolder, uploadImage } from '@/util/fileSystem'
 import { guessClipboardFilePath } from '@/util/clipboard'
 import { getCssForOptions, getHtmlToc, type PdfCssOptions, type HtmlTocOptions } from '@/util/pdf'
-import { resolveTocHeadingElement } from '@/util/tocNavigation'
+import { resolveTocHeadingElement, TOP_LEVEL_HEADINGS_SELECTOR } from '@/util/tocNavigation'
+import { findActiveHeadingSlug } from '@/util/findActiveHeading'
 import { addCommonStyle, setEditorWidth, setWrapCodeBlocks } from '@/util/theme'
 import { usePreferencesStore } from '@/store/preferences'
 import { useEditorStore } from '@/store/editor'
@@ -151,6 +152,13 @@ import { type InputNumberInstance } from 'element-plus'
 
 const { t } = useI18n()
 const STANDAR_Y = 320
+
+// Distance (px) below the editor's top edge that defines the TOC "active line":
+// a heading becomes the active TOC entry once it has scrolled to or above this
+// line, and clicking a TOC entry parks its heading exactly there. Using one
+// constant for both keeps the scroll-spy highlight and click-to-navigate in
+// sync. Small, so the active section is the one at the top of the viewport.
+const TOC_ACTIVE_LINE_OFFSET = 12
 
 // Map the desktop language preference to the engine's bundled locale objects.
 const MUYA_LOCALES: Record<string, ILocale> = {
@@ -1182,15 +1190,26 @@ const scrollToCords = (y: number) => {
   })
 }
 
-// Smoothly scroll the editor so `anchor` sits at the standard top offset.
-// Shared by the TOC, search-highlight, and any other "reveal this element"
-// caller so the getBoundingClientRect + animatedScrollTo math lives once.
-const scrollElementIntoView = (anchor: Element | null | undefined, duration = 300) => {
+// Smoothly scroll the editor so `anchor` sits at `viewportOffset` px from the
+// viewport top (default `STANDAR_Y`). Shared by the TOC, search-highlight, and
+// any other "reveal this element" caller so the getBoundingClientRect +
+// animatedScrollTo math lives once.
+const scrollElementIntoView = (
+  anchor: Element | null | undefined,
+  duration = 300,
+  viewportOffset = STANDAR_Y
+) => {
   const container = getScrollContainer()
   if (!container || !anchor) return
   const { y } = anchor.getBoundingClientRect()
-  animatedScrollTo(container, container.scrollTop + y - STANDAR_Y, duration)
+  animatedScrollTo(container, container.scrollTop + y - viewportOffset, duration)
 }
+
+// Viewport y of the TOC active line (editor's top edge + offset). Both the
+// scroll-spy and click-to-navigate use this so a clicked heading lands exactly
+// where the highlight considers it active.
+const getTocActiveLineY = (container: Element): number =>
+  container.getBoundingClientRect().top + TOC_ACTIVE_LINE_OFFSET
 
 const scrollToHighlight = () => {
   return scrollToElement('.mu-highlight')
@@ -1205,7 +1224,16 @@ const scrollToHighlight = () => {
 const scrollToHeader = (slug: unknown) => {
   const container = getScrollContainer()
   if (!container) return
-  scrollElementIntoView(resolveTocHeadingElement(container, editorStore.listToc, slug))
+  // Highlight the target right away and mute the scroll-spy for the duration of
+  // the animated scroll, so the highlight jumps straight to the clicked entry
+  // instead of flickering through every section the scroll passes over.
+  if (typeof slug === 'string') editorStore.SET_ACTIVE_HEADING(slug)
+  tocScrollSpyMutedUntil = performance.now() + TOC_SCROLL_DURATION + 100
+  scrollElementIntoView(
+    resolveTocHeadingElement(container, editorStore.listToc, slug),
+    TOC_SCROLL_DURATION,
+    getTocActiveLineY(container)
+  )
 }
 
 // Scrolls to a non-heading in-document anchor target (e.g. a custom
@@ -1639,6 +1667,16 @@ const handleLanguageChanged = (newLocale?: unknown) => {
 }
 const resizeObserverForEditor = new ResizeObserver(handleResetPaddingBottom)
 
+// Detaches the TOC scroll-spy listener; set in onMounted, called on unmount.
+let detachTocScrollSpy: (() => void) | null = null
+
+// While a TOC click animates the scroll to a heading, the container sweeps past
+// every intermediate heading and each scroll event would flicker the highlight
+// through all of them. Mute the scroll-spy until this timestamp (set on click,
+// covering the animation) and highlight the clicked heading immediately instead.
+let tocScrollSpyMutedUntil = 0
+const TOC_SCROLL_DURATION = 300
+
 onMounted(() => {
   printer = new Printer()
   const ele = editorRef.value
@@ -1749,6 +1787,60 @@ onMounted(() => {
   }
 
   const container = getScrollContainer()!
+
+  // Scroll-spy: the active TOC heading is the last one whose top has scrolled to
+  // or above the active line (`getTocActiveLineY`, near the editor's top edge).
+  // Click-to-navigate parks a heading on that same line, so a heading goes
+  // active exactly when navigation would have placed it there.
+  //
+  // Resolve slug -> heading by DOCUMENT ORDER against `listToc` (the same set/
+  // order `getTOC` enumerates and `resolveTocHeadingElement` uses for clicks).
+  // The DOM is queried FRESH every call rather than cached: the engine re-renders
+  // heading blocks (snabbdom patches), which detaches any cached node so its
+  // `getBoundingClientRect()` goes stale and the highlight sticks to an old
+  // heading. The query is scoped to top-level headings and throttled to one
+  // animation frame, so it stays cheap. `getBoundingClientRect().top` is
+  // viewport-relative, same frame as the active line — no offsetParent bias.
+  const updateActiveHeading = (): void => {
+    const listToc = editorStore.listToc
+    if (listToc.length === 0) return
+    const headings = container.querySelectorAll<HTMLElement>(TOP_LEVEL_HEADINGS_SELECTOR)
+    const lineY = getTocActiveLineY(container)
+    const entries: Array<{ slug: string; offsetTop: number }> = []
+    listToc.forEach((item, index) => {
+      const el = headings[index]
+      if (el && typeof item.slug === 'string' && item.slug.length > 0) {
+        entries.push({ slug: item.slug, offsetTop: el.getBoundingClientRect().top })
+      }
+    })
+    if (entries.length === 0) return
+    const active = findActiveHeadingSlug(entries, lineY)
+    if (active && active !== editorStore.activeHeadingSlug) {
+      editorStore.SET_ACTIVE_HEADING(active)
+    }
+  }
+
+  // Coalesce scroll bursts to one update per animation frame.
+  let scrollSpyFrame = 0
+  const onContainerScroll = (): void => {
+    if (scrollSpyFrame) return
+    scrollSpyFrame = requestAnimationFrame(() => {
+      scrollSpyFrame = 0
+      // Muted while a TOC click animates the scroll (see tocScrollSpyMutedUntil).
+      if (performance.now() < tocScrollSpyMutedUntil) return
+      updateActiveHeading()
+    })
+  }
+  container.addEventListener('scroll', onContainerScroll, { passive: true })
+  detachTocScrollSpy = () => {
+    container.removeEventListener('scroll', onContainerScroll)
+    if (scrollSpyFrame) cancelAnimationFrame(scrollSpyFrame)
+  }
+
+  // Seed the highlight after the TOC changes (file open / tab switch / edit) so a
+  // section is active immediately, not only after the first scroll. `nextTick`
+  // lets the heading DOM settle before we measure it.
+  watch(() => editorStore.listToc, () => nextTick(updateActiveHeading), { immediate: true })
 
   // Listen for language changes and update the engine locale.
   bus.on('language-changed', handleLanguageChanged)
@@ -1878,6 +1970,11 @@ onMounted(() => {
 
   editor.value.on('selection-change', (changes: MuyaChange) => {
     const y = (changes.cursorCoords?.y ?? null) as number | null
+
+    // Keep the TOC highlight fresh when editing moves the viewport without
+    // firing a scroll event (the scroll listener covers the rest).
+    updateActiveHeading()
+
     if (y != null) {
       if (typewriter.value) {
         const startPosition = container.scrollTop
@@ -1955,6 +2052,10 @@ onBeforeUnmount(() => {
     const container = getScrollContainer()
     container?.removeEventListener('scroll', scrollHandler)
   }
+
+  // Detach the TOC scroll-spy listener + any pending rAF.
+  detachTocScrollSpy?.()
+  detachTocScrollSpy = null
   scrollHandler = null
 
   resizeObserverForEditor.disconnect()

@@ -142,6 +142,7 @@ export interface EditorState {
   tabIdToIndex: Record<string, number>
   listToc: TocItem[]
   toc: TocTreeNode[]
+  activeHeadingSlug: string
 }
 
 const autoSaveTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -152,7 +153,11 @@ export const useEditorStore = defineStore('editor', {
     tabs: [],
     tabIdToIndex: {},
     listToc: [], // Used for equal check and for searching for the correct github-slug to jump to
-    toc: []
+    toc: [],
+    // Slug of the heading the caret currently sits under; drives the TOC
+    // highlight. Resolved by document order (see findActiveHeadingSlug), never
+    // by a `#slug` selector — @muyajs/core slugs are not stamped onto the DOM.
+    activeHeadingSlug: ''
   }),
 
   actions: {
@@ -811,6 +816,9 @@ export const useEditorStore = defineStore('editor', {
           currentFile
         window.DIRNAME = pathname ? window.path.dirname(pathname) : ''
         this.currentFile = currentFile
+        // Clear the TOC highlight so the incoming file does not briefly show
+        // the previous file's active heading before the first selection-change.
+        this.activeHeadingSlug = ''
         didUpdateCurrentFile = true
 
         if (!this.tabs.some((file) => file.id === currentFile.id)) {
@@ -1365,6 +1373,16 @@ export const useEditorStore = defineStore('editor', {
     UPDATE_TOC(toc: TocItem[]): void {
       this.listToc = toc ?? []
       this.toc = listToTree<TocItem>(toc ?? [])
+    },
+
+    /**
+     * Records the slug of the heading the caret currently sits under, so the
+     * TOC sidebar can highlight it. The caller only invokes this when the slug
+     * actually changes, so no `equal` guard is needed here.
+     * @param slug The active heading's slug (from `listToc`).
+     */
+    SET_ACTIVE_HEADING(slug: string): void {
+      this.activeHeadingSlug = slug
     },
 
     // Content change from realtime preview editor and source code editor
