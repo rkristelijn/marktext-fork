@@ -4,6 +4,7 @@ export { es } from './es';
 export { fr } from './fr';
 export { ja } from './ja';
 export { ko } from './ko';
+export { nl } from './nl';
 export { pt } from './pt';
 export { zhCN } from './zh-CN';
 export { zhTW } from './zh-TW';
