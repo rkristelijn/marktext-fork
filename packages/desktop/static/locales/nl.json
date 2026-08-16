@@ -82,7 +82,7 @@
       "looseListItem": "Los lijstitem",
       "paragraphItem": "Alinea-item",
       "horizontalRule": "Horizontale lijn",
-      "frontMatter": "Voorwerk"
+      "frontMatter": "Front Matter"
     },
     "window": {
       "title": "Venster",
@@ -313,7 +313,7 @@
       "leftRight": "Links/Rechts:",
       "widthHeight": "Breedte/Hoogte in mm:"
     },
-    "showFrontMatter": "Voorwerk tonen",
+    "showFrontMatter": "Front Matter tonen",
     "style": {
       "label": "Stijl",
       "overwriteThemeFont": "Thema-lettertype overschrijven",
@@ -447,7 +447,7 @@
         "preferHeadingStyle": "De voorkeursstijl voor koppen",
         "tabSize": "Tab vervangen door x spaties",
         "listIndentation": "Inspringkeuze voor lijsten",
-        "frontmatterType": "Het type voorwerk",
+        "frontmatterType": "Het type Front Matter",
         "superSubScript": "Pandoc superscript en subscript inschakelen",
         "footnote": "Pandoc voetnoten inschakelen",
         "isHtmlEnabled": "HTML-weergave inschakelen",
@@ -735,8 +735,8 @@
         "preferHeadingStyle": "Voorkeursstijl voor koppen"
       },
       "frontmatter": {
-        "title": "Voorwerk",
-        "frontmatterType": "Type voorwerk"
+        "title": "Front Matter",
+        "frontmatterType": "Type Front Matter"
       },
       "extensions": {
         "title": "Extensies",
@@ -747,15 +747,15 @@
         "sequenceTheme": "Sequentiethema",
         "superscript": "Superscript",
         "subscript": "Subscript",
-        "frontMatter": "Voorwerk",
+        "frontMatter": "Front Matter",
         "math": "Wiskunde",
         "diagram": "Diagram",
         "footnoteNotes": "Voetnoten",
         "frontmatterType": {
-          "frontmatterType": "Voorwerktype",
+          "frontmatterType": "Front Matter-type",
           "jsonBrace": "JSON met accolades",
           "jsonSemicolon": "JSON met puntkomma",
-          "title": "Voorwerktype"
+          "title": "Front Matter-type"
         }
       },
       "diagrams": {
@@ -969,7 +969,7 @@
       "looseListItem": "Los lijstitem",
       "paragraph": "Alinea",
       "horizontalLine": "Horizontale lijn",
-      "frontMatter": "Voorwerk",
+      "frontMatter": "Front Matter",
       "resetParagraph": "Alinea herstellen",
       "mathBlock": "Wiskundeblok",
       "horizontalRule": "Horizontale lijn"
@@ -1090,7 +1090,7 @@
       "highlightEnd": "[markering einde]",
       "typeAtToInsert": "Typ {'@'} om in te voegen",
       "inputFootnoteDefinition": "Voer de voetnootdefinitie in...",
-      "inputYamlFrontMatter": "Voer YAML-voorwerk in",
+      "inputYamlFrontMatter": "Voer YAML Front Matter in",
       "inputLanguageIdentifier": "Voer taalidentificatie in...",
       "inputMathematicalFormula": "Voer wiskundeformule in...",
       "fence": "omheining",
@@ -1136,7 +1136,7 @@
       "subtitle": "---"
     },
     "frontMatter": {
-      "title": "Voorwerk",
+      "title": "Front Matter",
       "subtitle": "--- YAML ---"
     },
     "header1": {
@@ -1269,7 +1269,7 @@
     "html": "HTML",
     "mathblock": "Wiskundeblok",
     "pre": "Codeblok",
-    "frontMatter": "Voorwerk",
+    "frontMatter": "Front Matter",
     "ulTask": "Takenlijst",
     "ulBullet": "Opsommingslijst",
     "olOrder": "Genummerde lijst",
@@ -1316,7 +1316,7 @@
       }
     },
     "placeholders": {
-      "frontMatter": "Voer YAML-voorwerk in",
+      "frontMatter": "Voer YAML Front Matter in",
       "languageIdentifier": "Voer taalidentificatie in...",
       "mathFormula": "Voer wiskundeformule in..."
     },
@@ -1380,12 +1380,12 @@
     "highlight-end": "[markering einde]",
     "type-at-to-insert": "Typ {'@'} om in te voegen",
     "input-footnote-definition": "Voer voetnootdefinitie in",
-    "input-yaml-front-matter": "Voer YAML-voorwerk in",
+    "input-yaml-front-matter": "Voer YAML Front Matter in",
     "input-language-identifier": "Voer taalidentificatie in",
     "input-mathematical-formula": "Voer wiskundeformule in",
     "fence": "omheining",
     "indent": "inspringing",
-    "front-matter-delimiter": "voorwerk-scheidingsteken",
+    "front-matter-delimiter": "Front Matter-scheidingsteken",
     "math-delimiter": "wiskunde-scheidingsteken",
     "mermaid-start": "mermaid start",
     "flowchart-start": "stroomdiagram start",
