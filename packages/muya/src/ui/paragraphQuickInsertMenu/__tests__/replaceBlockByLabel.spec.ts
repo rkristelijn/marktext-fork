@@ -2,9 +2,10 @@
 import type Parent from '../../../block/base/parent';
 import type { IConstructor } from '../../../block/types';
 import type { Muya } from '../../../index';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { replaceBlockByLabel } from '../../../block/blockTransforms';
 import { ScrollPage } from '../../../block/scrollPage';
-import { replaceBlockByLabel } from '../config';
+import { Muya as MuyaClass } from '../../../muya';
 
 // Loose mock-block shape the tests build via `makeFakeBlock` /
 // `makeFakeOriginBlock`. These don't satisfy the full Parent surface — the
@@ -233,5 +234,253 @@ describe('replaceBlockByLabel — paragraph→list keeps text verbatim (marktext
         finally {
             restore();
         }
+    });
+});
+
+// Front matter is prepended at the document start rather than replacing the
+// cursor block in place (`block.replaceWith`), so the `/` quick-insert trigger
+// text the user typed survives in the original paragraph unless we clear it
+// explicitly. Every other label drops the trigger implicitly via
+// `block.replaceWith(newBlock)`; front matter must clear the trigger paragraph
+// itself. Regression target: "通过 quick insert 菜单插入 Front matter 时候 `/`
+// 没有自动删除".
+function makeFrontMatterMuya(): Muya {
+    return {
+        options: {
+            preferLooseListItem: false,
+            bulletListMarker: '-',
+            orderListDelimiter: '.',
+            frontmatterType: '-',
+        },
+        editor: {
+            scrollPage: {
+                firstChild: { blockName: 'paragraph' },
+                insertBefore: vi.fn(),
+            },
+        },
+    } as unknown as Muya;
+}
+
+describe('replaceBlockByLabel — frontmatter clears the `/` trigger text', () => {
+    it('empties the trigger paragraph content and refreshes its DOM', () => {
+        const { restore } = setupCreateSpy();
+        try {
+            const update = vi.fn();
+            const content = { text: '/front', update };
+            const replaceWith = vi.fn();
+            const block = {
+                replaceWith,
+                firstContentInDescendant: () => content,
+            } as unknown as Parent;
+
+            replaceBlockByLabel({
+                block,
+                muya: makeFrontMatterMuya(),
+                label: 'frontmatter',
+            });
+
+            // The `/` typed to open the menu must be gone...
+            expect(content.text).toBe('');
+            // ...and the DOM re-rendered so it does not keep showing `/front`.
+            expect(update).toHaveBeenCalled();
+            // Front matter is prepended, never an in-place replace of the cursor block.
+            expect(replaceWith).not.toHaveBeenCalled();
+        }
+        finally {
+            restore();
+        }
+    });
+});
+
+// The in-editor "table" insert (the `/` quick-insert menu and the paragraph
+// front-menu both route through `replaceBlockByLabel`) must show the legacy
+// hover-grid dimension picker (`TableChessboard`) — NOT drop a fixed-size
+// table. This is a regression target: #4435 deleted the picker UI and the
+// quick-insert dropped a default table directly. `replaceBlockByLabel({label:
+// 'table'})` must instead dispatch `muya-table-picker` (which the chessboard
+// subscribes to) with a position reference and an `(row, column)` callback,
+// and that callback must create a table at `row + 1 × column + 1` to match
+// legacy muyajs `showTablePicker`.
+function makeTableMuya(): {
+    muya: Muya;
+    emit: ReturnType<typeof vi.fn>;
+    createTable: ReturnType<typeof vi.fn>;
+} {
+    const emit = vi.fn();
+    const createTable = vi.fn();
+
+    const muya = {
+        options: {
+            preferLooseListItem: false,
+            bulletListMarker: '-',
+            orderListDelimiter: '.',
+            frontmatterType: '---',
+        },
+        eventCenter: { emit },
+        createTable,
+    } as unknown as Muya;
+
+    return { muya, emit, createTable };
+}
+
+function makeTableBlock(): Parent {
+    return {
+        replaceWith: vi.fn(),
+        // `showTablePicker` falls back to the block's DOM node when the cursor
+        // has no coords (the happy-dom test env has no real selection).
+        domNode: document.createElement('div'),
+    } as unknown as Parent;
+}
+
+describe('replaceBlockByLabel — in-editor "table" shows the grid picker (revert #4435)', () => {
+    it('dispatches `muya-table-picker` with a reference + handler instead of creating a default table', () => {
+        const { captured, restore } = setupCreateSpy();
+        try {
+            const { muya, emit, createTable } = makeTableMuya();
+
+            replaceBlockByLabel({
+                block: makeTableBlock(),
+                muya,
+                label: 'table',
+            });
+
+            // The picker is dispatched...
+            expect(emit).toHaveBeenCalledTimes(1);
+            const [event, data, reference, handler] = emit.mock.calls[0];
+            expect(event).toBe('muya-table-picker');
+            expect(data).toEqual({ row: -1, column: -1 });
+            expect(reference).toBeTruthy();
+            expect(typeof handler).toBe('function');
+
+            // ...and NO default table block is built up-front.
+            expect(captured.find(c => c.label === 'table')).toBeUndefined();
+            expect(createTable).not.toHaveBeenCalled();
+        }
+        finally {
+            restore();
+        }
+    });
+
+    it('the picker handler creates a table at (row + 1) × (column + 1)', () => {
+        const { muya, emit, createTable } = makeTableMuya();
+
+        replaceBlockByLabel({
+            block: makeTableBlock(),
+            muya,
+            label: 'table',
+        });
+
+        const handler = emit.mock.calls[0][3] as (row: number, column: number) => void;
+        // The chessboard pick is zero-based, e.g. picking the 3rd row / 4th
+        // column reports (2, 3) -> a 3×4 table.
+        handler(2, 3);
+
+        expect(createTable).toHaveBeenCalledTimes(1);
+        // The picker always replaces its disposable trigger block.
+        expect(createTable).toHaveBeenCalledWith({ rows: 3, columns: 4 }, { replace: true });
+    });
+
+    it('falls back to the block DOM node as the reference when the cursor has no coords', () => {
+        const { muya, emit } = makeTableMuya();
+        const block = makeTableBlock();
+
+        replaceBlockByLabel({ block, muya, label: 'table' });
+
+        const reference = emit.mock.calls[0][2];
+        // happy-dom yields no selection coords, so `getCursorReference()` is
+        // null and the fallback is the block's own DOM node.
+        expect(reference).toBe((block as unknown as { domNode: HTMLElement }).domNode);
+    });
+});
+
+// Item 36: the quick-insert "Front Matter" entry derives the block's
+// lang/style from `muya.options.frontmatterType` (the #4429 fix replaced the
+// buggy `/\+-/.test()` derivation), and `serializeFrontMatter` switches on
+// `lang` to emit the right fences. The frontmatter describe above only covers
+// `frontmatterType: '-'` for trigger-text clearing — it never asserts the
+// serialized delimiter for all four types. Boot a real Muya per type, drive
+// the quick-insert frontmatter path (`replaceBlockByLabel` label
+// 'frontmatter'), and assert the round-tripped markdown carries the matching
+// delimiters: '-'->---/---, '+'->+++/+++, ';'->;;;/;;;, '{'->{/}.
+const bootedHosts: HTMLElement[] = [];
+let originalVersion: string | undefined;
+let hadVersion = false;
+
+beforeEach(() => {
+    hadVersion = 'MUYA_VERSION' in window;
+    originalVersion = window.MUYA_VERSION;
+    window.MUYA_VERSION = 'test';
+});
+
+afterEach(() => {
+    while (bootedHosts.length) {
+        const host = bootedHosts.pop()!;
+        host.remove();
+    }
+    if (hadVersion)
+        window.MUYA_VERSION = originalVersion as string;
+    else
+        delete (window as Partial<Window>).MUYA_VERSION;
+});
+
+function bootMuya(frontmatterType: string): Muya {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const muya = new MuyaClass(host, {
+        markdown: '',
+        frontmatterType,
+    } as ConstructorParameters<typeof MuyaClass>[1]);
+    muya.init();
+    bootedHosts.push(muya.domNode);
+    return muya;
+}
+
+interface IFrontmatterCase {
+    label: string;
+    type: string;
+    start: string;
+    end: string;
+}
+
+const FRONTMATTER_CASES: IFrontmatterCase[] = [
+    { label: 'yaml (---)', type: '-', start: '---\n', end: '---\n' },
+    { label: 'toml (+++)', type: '+', start: '+++\n', end: '+++\n' },
+    { label: 'json (;;;)', type: ';', start: ';;;\n', end: ';;;\n' },
+    { label: 'json ({})', type: '{', start: '{\n', end: '}\n' },
+];
+
+describe('replaceBlockByLabel — quick-insert frontmatter serializes the right delimiter per frontmatterType', () => {
+    for (const c of FRONTMATTER_CASES) {
+        it(`frontmatterType '${c.type}' -> ${c.label}`, async () => {
+            const muya = bootMuya(c.type);
+            const block = muya.editor.scrollPage!.firstContentInDescendant()!.outMostBlock! as unknown as Parent;
+
+            replaceBlockByLabel({ block, muya, label: 'frontmatter' });
+
+            await vi.waitFor(() => {
+                expect((muya.getState()[0] as { name: string }).name).toBe('frontmatter');
+            });
+
+            const md = muya.getMarkdown();
+            expect(md.startsWith(c.start)).toBe(true);
+            // Empty frontmatter serializes as start + one empty line + end, so
+            // the closing delimiter must also be present.
+            expect(md).toContain(c.end);
+        });
+    }
+
+    it('the inserted frontmatter block carries the lang derived from frontmatterType', async () => {
+        const muya = bootMuya('+');
+        const block = muya.editor.scrollPage!.firstContentInDescendant()!.outMostBlock! as unknown as Parent;
+
+        replaceBlockByLabel({ block, muya, label: 'frontmatter' });
+
+        await vi.waitFor(() => {
+            const fm = muya.getState()[0] as { name: string; meta: { lang: string; style: string } };
+            expect(fm.name).toBe('frontmatter');
+            // '+' must map to toml/'+' — not fall through to json (the #4429 bug).
+            expect(fm.meta.lang).toBe('toml');
+            expect(fm.meta.style).toBe('+');
+        });
     });
 });

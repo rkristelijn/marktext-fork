@@ -25,6 +25,7 @@ interface ITableInfo {
 
 export class TableRowColumMenu extends BaseFloat {
     static pluginName = 'tableBarTools';
+    public override capturesContentKeydown = true;
     private _oldVNode: VNode | null = null;
     private _tableInfo: ITableInfo | null = null;
     private _block: TableBodyCell | null = null;
@@ -119,8 +120,8 @@ export class TableRowColumMenu extends BaseFloat {
                 cursorBlock.setCursor(0, 0);
         }
         else {
-            // Marktext 6293d408 (#572) backport: after a row/column delete,
-            // the caret used to live inside a now-detached cell. The table
+            // After a row/column delete, the caret used to live inside a
+            // now-detached cell. The table
             // mutators now return a surviving neighbour cell's content so we
             // can re-anchor the caret on a still-attached cell.
             const cursorBlock = target === 'row'

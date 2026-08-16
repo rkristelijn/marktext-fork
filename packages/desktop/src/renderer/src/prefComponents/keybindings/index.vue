@@ -8,7 +8,7 @@
           class="link"
           :title="t('preferences.keybindings.online')"
           :aria-label="t('preferences.keybindings.online')"
-          @click="openKeybindingWiki"
+          @click="openKeybindingDocs"
         ><LinkIcon
           :size="14"
           class="link-icon"
@@ -167,9 +167,9 @@ onUnmounted(() => {
   keybindingConfigurator.value = null
 })
 
-const openKeybindingWiki = (): void => {
+const openKeybindingDocs = (): void => {
   window.electron.shell.openExternal(
-    'https://github.com/marktext/marktext/blob/develop/docs/end-user/KEYBINDINGS.md'
+    'https://marktext.me/docs/key-bindings'
   )
 }
 
@@ -309,6 +309,15 @@ const dumpKeyboardInformation = (): void => {
 .pref-keybindings .el-table tr {
   background: var(--editorBgColor) !important;
 }
+/* Element Plus colours table text with its own --el-text-color-regular grey,
+   which the app never themes — so the list rendered as low-contrast grey on
+   every theme (≈2.3:1 on dark themes, well below WCAG AA). Use the theme's own
+   editor text colour so the bindings stay readable everywhere (#3937). */
+.pref-keybindings .el-table,
+.pref-keybindings .el-table th.el-table__cell,
+.pref-keybindings .el-table td.el-table__cell {
+  color: var(--editorColor);
+}
 .pref-keybindings .el-table th.el-table__cell.is-leaf,
 .pref-keybindings .el-table th,
 .pref-keybindings .el-table td {
@@ -326,11 +335,12 @@ const dumpKeyboardInformation = (): void => {
 .pref-keybindings .el-table__fixed::before {
   background: var(--tableBorderColor);
 }
-.pref-keybindings .el-table__body tr.hover-row.current-row > td,
-.pref-keybindings .el-table__body tr.hover-row.el-table__row--striped.current-row > td,
-.pref-keybindings .el-table__body tr.hover-row.el-table__row--striped > td,
-.pref-keybindings .el-table__body tr.hover-row > td {
-  background: var(--selectionColor);
+/* Element Plus paints the hovered row via --el-table-row-hover-bg-color, which
+   defaults to the light --el-fill-color-light — a near-white bar that hides the
+   theme-coloured text on dark themes. Point it at the theme's own selection
+   colour so hovered rows stay readable on every theme (follow-up to #3937). */
+.pref-keybindings .el-table {
+  --el-table-row-hover-bg-color: var(--selectionColor);
 }
 .pref-keybindings .el-table .el-table__cell {
   padding: 2px 0;

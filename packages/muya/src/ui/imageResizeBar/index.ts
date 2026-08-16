@@ -1,8 +1,10 @@
 import type Format from '../../block/base/format';
 import type { Muya } from '../../index';
 import type { ImageToken } from '../../inlineRenderer/types';
+import { autoUpdate } from '@floating-ui/dom';
 
 import { isHTMLElement, isMouseEvent } from '../../utils';
+import { findScrollContainer } from '../../utils/dom';
 import './index.css';
 
 const VERTICAL_BAR = ['left', 'right'];
@@ -25,6 +27,8 @@ export class ImageResizeBar {
     private _eventId: string[] = [];
     private _lastScrollTop: number | null = null;
     private _resizing: boolean = false;
+    // Stops the autoUpdate reposition loop set up in `_render`.
+    private _cleanup: (() => void) | null = null;
     // A container for storing drag strips
     private _container: HTMLDivElement;
 
@@ -33,10 +37,10 @@ export class ImageResizeBar {
         container.classList.add('mu-transformer');
         document.body.appendChild(container);
 
-        this.listen();
+        this._listen();
     }
 
-    listen() {
+    private _listen() {
         const { eventCenter, domNode } = this.muya;
 
         const scrollHandler = (event: Event) => {
@@ -64,7 +68,7 @@ export class ImageResizeBar {
                 this._block = block;
                 this._imageInfo = imageInfo;
                 setTimeout(() => {
-                    this.render();
+                    this._render();
                 });
             }
             else {
@@ -73,25 +77,28 @@ export class ImageResizeBar {
         });
 
         eventCenter.attachDOMEvent(document, 'click', this.hide.bind(this));
-        eventCenter.attachDOMEvent(domNode.parentElement!, 'scroll', scrollHandler);
+        eventCenter.attachDOMEvent(findScrollContainer(domNode), 'scroll', scrollHandler);
         eventCenter.attachDOMEvent(this._container, 'dragstart', event =>
             event.preventDefault());
-        eventCenter.attachDOMEvent(document.body, 'mousedown', this.mouseDown);
+        eventCenter.attachDOMEvent(document.body, 'mousedown', this._mouseDown);
     }
 
-    render() {
+    private _render() {
         const { eventCenter } = this.muya;
         if (this._status)
             this.hide();
 
         this._status = true;
 
-        this.createElements();
-        this.update();
+        this._createElements();
+        this._update();
+        // Reposition the handles whenever the image moves (window/ancestor
+        // resize, sidebar toggle, scroll), so they stay attached to it (#2939).
+        this._cleanup = autoUpdate(this._reference!, this._container, () => this._update());
         eventCenter.emit('muya-float', this, true);
     }
 
-    createElements() {
+    private _createElements() {
         VERTICAL_BAR.forEach((c) => {
             const bar = document.createElement('div');
             bar.classList.add('bar');
@@ -101,7 +108,7 @@ export class ImageResizeBar {
         });
     }
 
-    update() {
+    private _update() {
         const rect = this._reference!.getBoundingClientRect();
         VERTICAL_BAR.forEach((c) => {
             const bar: HTMLDivElement = this._container.querySelector(`.${c}`)!;
@@ -120,7 +127,7 @@ export class ImageResizeBar {
         });
     }
 
-    mouseDown = (event: Event) => {
+    private _mouseDown = (event: Event) => {
         if (!isHTMLElement(event.target) || !event.target.closest('.bar'))
             return;
 
@@ -130,12 +137,12 @@ export class ImageResizeBar {
         const mouseMoveId = eventCenter.attachDOMEvent(
             document.body,
             'mousemove',
-            this.mouseMove,
+            this._mouseMove,
         );
         const mouseUpId = eventCenter.attachDOMEvent(
             document.body,
             'mouseup',
-            this.mouseUp,
+            this._mouseUp,
         );
         this._resizing = true;
         // Hide image toolbar
@@ -143,7 +150,7 @@ export class ImageResizeBar {
         this._eventId.push(mouseMoveId, mouseUpId);
     };
 
-    mouseMove = (event: Event) => {
+    private _mouseMove = (event: Event) => {
         if (!isMouseEvent(event))
             return;
 
@@ -176,10 +183,10 @@ export class ImageResizeBar {
         width = Number.parseInt(String(width));
         this._width = width;
         image.setAttribute('width', String(width));
-        this.update();
+        this._update();
     };
 
-    mouseUp = (event: Event) => {
+    private _mouseUp = (event: Event) => {
         event.preventDefault();
         const { eventCenter } = this.muya;
         if (this._eventId.length) {
@@ -201,9 +208,19 @@ export class ImageResizeBar {
 
     hide() {
         const { eventCenter } = this.muya;
+        this._cleanup?.();
+        this._cleanup = null;
         const circles = this._container.querySelectorAll('.bar');
         Array.from(circles).forEach(c => c.remove());
         this._status = false;
         eventCenter.emit('muya-float', this, false);
+    }
+
+    // Remove the `.mu-transformer` container appended to document.body in the
+    // constructor; invoked by `Muya.destroy()` so it is not leaked (#3315).
+    destroy() {
+        this._cleanup?.();
+        this._cleanup = null;
+        this._container.remove();
     }
 }

@@ -3,13 +3,16 @@
     --theme-color: rgb(33 181 111 / 100%);
     --highlight-color: rgb(33 181 111 / 40%);
     --selection-color: rgb(45 170 219 / 30%);
-    --editor-color: rgb(0 0 0 / 70%);
-    --editor-color-80: rgb(0 0 0 / 80%);
-    --editor-color-50: rgb(0 0 0 / 50%);
-    --editor-color-30: rgb(0 0 0 / 30%);
-    --editor-color-10: rgb(0 0 0 / 10%);
-    --editor-color-04: rgb(0 0 0 / 3%);
+    --editor-color: #4d4d4d;
+    --editor-color-80: #333;
+    --editor-color-50: #808080;
+    --editor-color-30: #b3b3b3;
+    --editor-color-10: #e6e6e6;
+    --editor-color-04: #f7f7f7;
     --editor-bg-color: rgb(255 255 255 / 100%);
+
+    /* width of the centered editing column (`.mu-container` max-width) */
+    --editor-area-width: 800px;
     --delete-color: #ff6969;
     --icon-color: #6b737b;
     --code-block-bg-color: rgb(0 0 0 / 3%);
@@ -20,10 +23,35 @@
     --button-border: 1px solid #dcdfe6;
     --button-bg-color-hover: linear-gradient(#f9f9f9, #f2f2f2);
     --button-border-hover: var(--button-border);
+
+    /* active / focus button variants — default to the resting button look so
+       the bundled light theme is unchanged; desktop themes can override. */
+    --button-bg-color-active: var(--button-bg-color);
+    --button-border-active: var(--button-border);
+    --button-border-focus: var(--button-border);
     --float-bg-color: #fff;
     --float-hover-color: rgb(0 0 0 / 4%);
     --float-border-color: rgb(0 0 0 / 10%);
     --float-shadow: rgb(15 15 15 / 3%) 0 0 0 1px, rgb(15 15 15 / 4%) 0 3px 6px, rgb(15 15 15 / 5%) 0 9px 24px;
+
+    /* markdown element colors — defaults mirror the current hardcoded /
+       opacity-tier values so the bundled light theme renders identically.
+       Consumers override them per theme. The desktop themes currently use
+       camelCase names (e.g. --linkColor, --h1Color); they will be migrated
+       to these kebab-case names as part of the muyajs -> @muyajs/core move. */
+    --link-color: rgb(20 86 240);
+    --h1-color: var(--editor-color-80);
+    --h2-color: var(--editor-color-80);
+    --h3-color: var(--editor-color-80);
+    --h4-color: var(--editor-color-80);
+    --h5-color: var(--editor-color-80);
+    --h6-color: var(--editor-color-80);
+    --blockquote-text-color: var(--editor-color-50);
+    --blockquote-border-color: var(--editor-color-30);
+    --strong-color: inherit;
+    --em-color: inherit;
+    --list-marker-color: inherit;
+    --hr-color: var(--editor-color-10);
 }
 
 /*
@@ -37,7 +65,7 @@
     src:
         local('Open Sans Light'),
         local('OpenSans-Light'),
-        url('./fonts/open-sans-v15-latin_latin-ext-300.woff') format('woff');
+        url('./fonts/open-sans-v27-latin-ext_latin-300.woff') format('woff');
 }
 
 @font-face {
@@ -47,7 +75,7 @@
     src:
         local('Open Sans Light Italic'),
         local('OpenSans-LightItalic'),
-        url('./fonts/open-sans-v15-latin_latin-ext-300italic.woff') format('woff');
+        url('./fonts/open-sans-v27-latin-ext_latin-300italic.woff') format('woff');
 }
 
 @font-face {
@@ -57,7 +85,7 @@
     src:
         local('Open Sans Regular'),
         local('OpenSans-Regular'),
-        url('./fonts/open-sans-v15-latin_latin-ext-regular.woff') format('woff');
+        url('./fonts/open-sans-v27-latin-ext_latin-regular.woff') format('woff');
 }
 
 @font-face {
@@ -67,7 +95,7 @@
     src:
         local('Open Sans Italic'),
         local('OpenSans-Italic'),
-        url('./fonts/open-sans-v15-latin_latin-ext-italic.woff') format('woff');
+        url('./fonts/open-sans-v27-latin-ext_latin-italic.woff') format('woff');
 }
 
 @font-face {
@@ -77,7 +105,7 @@
     src:
         local('Open Sans SemiBold'),
         local('OpenSans-SemiBold'),
-        url('./fonts/open-sans-v15-latin_latin-ext-600.woff') format('woff');
+        url('./fonts/open-sans-v27-latin-ext_latin-600.woff') format('woff');
 }
 
 @font-face {
@@ -87,7 +115,7 @@
     src:
         local('Open Sans SemiBold Italic'),
         local('OpenSans-SemiBoldItalic'),
-        url('./fonts/open-sans-v15-latin_latin-ext-600italic.woff') format('woff');
+        url('./fonts/open-sans-v27-latin-ext_latin-600italic.woff') format('woff');
 }
 
 @font-face {
@@ -97,7 +125,7 @@
     src:
         local('Open Sans Bold'),
         local('OpenSans-Bold'),
-        url('./fonts/open-sans-v15-latin_latin-ext-700.woff') format('woff');
+        url('./fonts/open-sans-v27-latin-ext_latin-700.woff') format('woff');
 }
 
 @font-face {
@@ -107,7 +135,7 @@
     src:
         local('Open Sans Bold Italic'),
         local('OpenSans-BoldItalic'),
-        url('./fonts/open-sans-v15-latin_latin-ext-700italic.woff') format('woff');
+        url('./fonts/open-sans-v27-latin-ext_latin-700italic.woff') format('woff');
 }
 
 /*
@@ -210,4 +238,14 @@ body {
     color: transparent;
 
     background: none;
+}
+
+/* Drag-and-drop image drop indicator (PG4). `dragDropImage.ts` positions this
+   absolutely-anchored bar at the top/bottom edge of the drop-target block. */
+#mu-dragover-ghost {
+    position: absolute;
+
+    height: 3px;
+
+    background: var(--highlight-color);
 }

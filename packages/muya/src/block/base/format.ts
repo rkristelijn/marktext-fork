@@ -4,13 +4,14 @@ import type {
     TextToken,
     Token,
 } from '../../inlineRenderer/types';
-import type { ICursor } from '../../selection/types';
+import type { IContentCursor, IRenderCursor } from '../../selection/types';
 import type { IBulletListState, IListItemState, IOrderListState, IParagraphState } from '../../state/types';
 import type { Nullable } from '../../types';
 import type { IImageInfo } from '../../utils/image';
 import type AtxHeading from '../commonMark/atxHeading';
 import type BulletList from '../commonMark/bulletList';
 import type SetextHeading from '../commonMark/setextHeading';
+import type Parent from './parent';
 import type TreeNode from './treeNode';
 import Content from '../../block/base/content';
 import { ScrollPage } from '../../block/scrollPage';
@@ -27,7 +28,7 @@ import Selection, { getCursorReference } from '../../selection';
 import { getTextContent } from '../../selection/dom';
 import { isListItemState } from '../../state/types';
 import { conflict, isHTMLElement, isMouseEvent } from '../../utils';
-import { correctImageSrc, getImageInfo } from '../../utils/image';
+import { correctImageSrc, encodeImageSrc, getImageInfo } from '../../utils/image';
 import logger from '../../utils/logger';
 
 interface IOffset {
@@ -58,6 +59,39 @@ const INLINE_UPDATE_FRAGMENTS = [
 
 const INLINE_UPDATE_REG = new RegExp(INLINE_UPDATE_FRAGMENTS.join('|'), 'i');
 
+// Offset of the cursor relative to a symmetric/asymmetric marker pair
+// (strong/em/code/math/html_tag). `open`/`close` are the opening/closing
+// marker lengths; for the symmetric inline markers they are equal.
+function markeredOffset(dis: number, len: number, open: number, close: number) {
+    if (dis < 0)
+        return 0;
+    if (dis < open)
+        return -dis;
+    if (dis <= len - close)
+        return -open;
+    if (dis <= len)
+        return len - dis - open - close;
+    return -open - close;
+}
+
+function linkOffset(dis: number, anchorLen: number) {
+    if (dis < 1)
+        return 0;
+    if (dis <= 1 + anchorLen)
+        return -1;
+    return anchorLen - dis;
+}
+
+function imageOffset(dis: number, altLen: number) {
+    if (dis < 1)
+        return 0;
+    if (dis < 2)
+        return -1;
+    if (dis <= 2 + altLen)
+        return -2;
+    return altLen - dis;
+}
+
 function getOffset(offset: number, token: Token) {
     const {
         range: { start, end },
@@ -76,74 +110,30 @@ function getOffset(offset: number, token: Token) {
         case 'inline_code':
 
         case 'inline_math': {
-            const MARKER_LEN = type === 'strong' || type === 'del' ? 2 : 1;
-            if (dis < 0)
-                return 0;
-            if (dis >= 0 && dis < MARKER_LEN)
-                return -dis;
-            if (dis >= MARKER_LEN && dis <= len - MARKER_LEN)
-                return -MARKER_LEN;
-            if (dis > len - MARKER_LEN && dis <= len)
-                return len - dis - 2 * MARKER_LEN;
-            if (dis > len)
-                return -2 * MARKER_LEN;
-
-            break;
+            const markerLen = type === 'strong' || type === 'del' ? 2 : 1;
+            return markeredOffset(dis, len, markerLen, markerLen);
         }
 
         case 'html_tag': {
             const { tag } = token;
             // handle underline, sup, sub
-            const OPEN_MARKER_LEN = FORMAT_TAG_MAP[tag].open.length;
-            const CLOSE_MARKER_LEN = FORMAT_TAG_MAP[tag].close.length;
-
-            if (dis < 0)
-                return 0;
-            if (dis >= 0 && dis < OPEN_MARKER_LEN)
-                return -dis;
-            if (dis >= OPEN_MARKER_LEN && dis <= len - CLOSE_MARKER_LEN)
-                return -OPEN_MARKER_LEN;
-            if (dis > len - CLOSE_MARKER_LEN && dis <= len)
-                return len - dis - OPEN_MARKER_LEN - CLOSE_MARKER_LEN;
-            if (dis > len)
-                return -OPEN_MARKER_LEN - CLOSE_MARKER_LEN;
-
-            break;
+            return markeredOffset(
+                dis,
+                len,
+                FORMAT_TAG_MAP[tag].open.length,
+                FORMAT_TAG_MAP[tag].close.length,
+            );
         }
 
-        case 'link': {
-            const { anchor } = token;
-            const MARKER_LEN = 1;
+        case 'link':
+            return linkOffset(dis, token.anchor.length);
 
-            if (dis < MARKER_LEN)
-                return 0;
-            if (dis >= MARKER_LEN && dis <= MARKER_LEN + anchor.length)
-                return -1;
-            if (dis > MARKER_LEN + anchor.length)
-                return anchor.length - dis;
-
-            break;
-        }
-
-        case 'image': {
-            const { alt } = token;
-            const MARKER_LEN = 1;
-
-            if (dis < MARKER_LEN)
-                return 0;
-            if (dis >= MARKER_LEN && dis < MARKER_LEN * 2)
-                return -1;
-            if (dis >= MARKER_LEN * 2 && dis <= MARKER_LEN * 2 + alt.length)
-                return -2;
-            if (dis > MARKER_LEN * 2 + alt.length)
-                return alt.length - dis;
-
-            break;
-        }
+        case 'image':
+            return imageOffset(dis, token.alt.length);
     }
 }
 
-function clearFormat(token: Token, cursor: ICursor) {
+function clearFormat(token: Token, cursor: IContentCursor) {
     switch (token.type) {
         case 'strong':
 
@@ -226,6 +216,10 @@ function checkTokenIsInlineFormat(token: Token) {
 class Format extends Content {
     static override blockName = 'format';
 
+    protected override get autoPairType() {
+        return 'format';
+    }
+
     private _checkCursorInTokenType(
         text: string,
         offset: number,
@@ -300,12 +294,14 @@ class Format extends Content {
     }
 
     // TODO: @JOCS remove use this.selection directly
-    checkNeedRender(cursor: ICursor = this.selection as ICursor) {
+    checkNeedRender(cursor: IRenderCursor = { anchor: this.selection.anchor ?? undefined, focus: this.selection.focus ?? undefined }) {
         const { labels } = this.inlineRenderer;
         const { text } = this;
         const { start: cStart, end: cEnd, anchor, focus } = cursor;
-        const anchorOffset = cStart ? cStart.offset : anchor!.offset;
-        const focusOffset = cEnd ? cEnd.offset : focus!.offset;
+        const anchorOffset = cStart ? cStart.offset : anchor?.offset;
+        const focusOffset = cEnd ? cEnd.offset : focus?.offset;
+        if (anchorOffset == null || focusOffset == null)
+            return false;
         const NO_NEED_TOKEN_REG = /text|hard_line_break|soft_line_break/;
 
         for (const token of tokenizer(text, {
@@ -376,11 +372,8 @@ class Format extends Content {
                 imageText += alt;
 
             imageText += '](';
-            if (src) {
-                imageText += src
-                    .replace(/ /g, encodeURI(' '))
-                    .replace(/#/g, encodeURIComponent('#'));
-            }
+            if (src)
+                imageText += encodeImageSrc(src);
 
             if (title)
                 imageText += ` "${title}"`;
@@ -400,7 +393,7 @@ class Format extends Content {
                 imageText += `${attr}="${value}" `;
             }
             imageText = imageText.trim();
-            imageText += '>';
+            imageText += ' />';
         }
 
         this.text
@@ -431,7 +424,7 @@ class Format extends Content {
             imageText += `${attr}="${value}" `;
         }
         imageText = imageText.trim();
-        imageText += '>';
+        imageText += ' />';
         this.text
             = oldText.substring(0, start) + imageText + oldText.substring(end);
 
@@ -439,7 +432,12 @@ class Format extends Content {
 
         const selector = `#${imageId.includes('_') ? imageId : `${imageId}_${token.range.start}`
         } img`;
-        const image: Nullable<HTMLElement> = document.querySelector<HTMLElement>(selector);
+        // Scope the lookup to this block: identical-src images share a DOM id,
+        // so a document-wide query would re-click the first occurrence. Within a
+        // single block the `_${range.start}` suffix is unique.
+        const image: Nullable<HTMLElement>
+            = this.domNode?.querySelector<HTMLElement>(selector)
+                ?? document.querySelector<HTMLElement>(selector);
 
         if (image)
             image.click();
@@ -447,11 +445,8 @@ class Format extends Content {
 
     // Replace the link's source text (e.g. `[Anthropic](https://…)`) with the
     // visible anchor text only (`Anthropic`), stripping the markdown / HTML
-    // around it. Port of marktext `linkCtrl.unlink` (cb25b3d4 / #1415), but
-    // simplified — marktext substituted `token.href` for plain markdown links,
-    // which was a long-standing UX quirk that turned a styled anchor into a
-    // bare URL. We keep the visible text instead, matching the contemporary
-    // norm (Notion, GDocs, Slack).
+    // around it. We keep the visible text rather than substituting the URL,
+    // matching the contemporary norm (Notion, GDocs, Slack).
     unlink({ range, text }: { range: { start: number; end: number } | null; text: string }) {
         if (!range)
             return;
@@ -516,7 +511,6 @@ class Format extends Content {
 
             const cursor = Object.assign({}, currentCursor, {
                 block: this,
-                path: this.path,
             });
 
             // TODO: The codes bellow maybe is wrong? and remove use this.selection directly
@@ -528,7 +522,7 @@ class Format extends Content {
             if (needRender)
                 this.update(cursor);
 
-            this.selection.setSelection(cursor);
+            this.setCursor(currentCursor.anchor.offset, currentCursor.focus.offset);
 
             // Check and show format picker
             if (cursor.start.offset !== cursor.end.offset) {
@@ -562,13 +556,17 @@ class Format extends Content {
             anchor.offset !== oldAnchor?.offset
             || focus.offset !== oldFocus?.offset
         ) {
-            const needUpdate = this.checkNeedRender({ anchor, focus });
-            const cursor = { anchor, focus, block: this, path: this.path };
+            // Also check the previously committed selection (no-arg default):
+            // a held arrow fires one keyup on release, so the caret can leap
+            // clear of a token in a single step and leave its markers stuck
+            // revealed. Mirrors the guard in `clickHandler`.
+            const needUpdate = this.checkNeedRender({ anchor, focus }) || this.checkNeedRender();
+            const cursor = { anchor, focus, block: this };
 
             if (needUpdate)
                 this.update(cursor);
 
-            this.selection.setSelection(cursor);
+            this.setCursor(anchor.offset, focus.offset);
         }
 
         // Check not edit emoji
@@ -640,10 +638,12 @@ class Format extends Content {
         if (this._checkNotSameToken(this.text, text))
             needRender = true;
 
+        const inputData = 'data' in event && typeof event.data === 'string' ? event.data : null;
+        this.muya.editor.history.markInputBoundary(inputType, inputData);
+
         this.text = text;
 
         const cursor = {
-            path: this.path,
             block: this,
             anchor: {
                 offset: start.offset,
@@ -658,7 +658,7 @@ class Format extends Content {
         if (checkMarkedUpdate || needRender)
             this.update(cursor);
 
-        this.selection.setSelection(cursor);
+        this.setCursor(start.offset, end.offset);
         // check edit emoji
         if (
             inputType !== 'insertFromPaste'
@@ -681,7 +681,12 @@ class Format extends Content {
             }
         }
 
-        // Check block convert if needed, and table cell no need to check.
+        this.checkInlineUpdate();
+    }
+
+    // Re-evaluate this block's type from its text (a leading `# `, `- `, `> `…
+    // promotes/demotes it). Table cells never reinterpret their text as markdown.
+    checkInlineUpdate(): void {
         if (this.blockName !== 'table.cell.content')
             this._convertIfNeeded();
     }
@@ -716,7 +721,7 @@ class Format extends Content {
                 break;
 
             case !!taskList:
-                this.convertToTaskList();
+                this._convertToTaskList();
                 break;
 
             case !!atxHeading:
@@ -820,8 +825,12 @@ class Format extends Content {
     private _convertToList() {
         const { text, parent, muya, hasSelection } = this;
         const { preferLooseListItem } = muya.options;
+        // The marker must start a line: the pre-group captures whole lines up to
+        // (and including) the newline before the marker, so a `*` inside e.g.
+        // `**bold**` on an earlier soft-line is never mistaken for the bullet
+        // marker (#2429).
         const matches = text.match(
-            /^([\s\S]*?) {0,3}([*+-]|\d{1,9}(?:\.|\))) {1,4}([\s\S]*)$/,
+            /^([\s\S]*\n)? {0,3}([*+-]|\d{1,9}(?:\.|\))) {1,4}([\s\S]*)$/,
         );
         const isOrdered = /\d/.test(matches![2]);
 
@@ -879,10 +888,10 @@ class Format extends Content {
         // convert `[*-+] \[[xX ]\] ` to task list.
         const TASK_LIST_REG = /^\[[x ]\] {1,4}/i;
         if (TASK_LIST_REG.test(firstContent.text))
-            firstContent.convertToTaskList();
+            firstContent._convertToTaskList();
     }
 
-    convertToTaskList() {
+    private _convertToTaskList() {
         const { text, parent, muya, hasSelection } = this;
         const { preferLooseListItem } = muya.options;
         const listItem = parent!.parent!;
@@ -1068,7 +1077,7 @@ class Format extends Content {
 
     // Setext Heading
     private _convertToSetextHeading(setextHeading: string) {
-        const level = /=/.test(setextHeading) ? 2 : 1;
+        const level = /=/.test(setextHeading) ? 1 : 2;
         if (
             this.parent?.blockName === 'setext-heading'
             && (this.parent as SetextHeading).meta.level === level
@@ -1262,7 +1271,7 @@ class Format extends Content {
     }
 
     // Paragraph
-    convertToParagraph(force = false) {
+    protected convertToParagraph(force = false) {
         if (
             !force
             && (this.parent!.blockName === 'setext-heading'
@@ -1298,48 +1307,30 @@ class Format extends Content {
         if (!start || !end || start?.offset !== end?.offset)
             return;
 
+        this.muya.editor.history.markInputBoundary('deleteContentBackward', null);
+
         // fix: #897 in marktext repo
         const { text } = this;
         const { footnote, superSubScript } = this.muya.options;
+        const { labels } = this.inlineRenderer;
         const tokens = tokenizer(text, {
+            labels,
             options: { footnote, superSubScript },
         });
-        let needRender = false;
-        let preToken = null;
-        let needSelectImage = false;
+        // The caret offset is unreliable when it is parked on a
+        // `contenteditable=false` inline image; resolve the real offset from the
+        // DOM so the scan can match the image token like any other caret.
+        const offset = this._caretOffsetOnInlineImage() ?? start.offset;
+        const { needRender, imageToken, referenceImageToken }
+            = this._scanBackspaceTokens(tokens, offset);
 
-        for (const token of tokens) {
-            // handle delete the second marker(et:*、$) in inline syntax.(Firefox compatible)
-            // Fix: https://github.com/marktext/muya/issues/113
-            // for example: foo **strong**|
-            if (token.range.end === start.offset) {
-                needRender = true;
-                token.raw = token.raw.substring(0, token.raw.length - 1);
-                break;
-            }
-
-            // If preToken is a syntax token, the the cursor is at offset 1, need to set the cursor manually.(Firefox compatible)
-            // // Fix: https://github.com/marktext/muya/issues/113
-            // for example: foo **strong**w|
-            if (token.range.start + 1 === start.offset) {
-                needRender = true;
-                token.raw = token.raw.substring(1);
-                break;
-            }
-
-            // handle pre token is a image, need preventdefault.
-            if (
-                token.range.start + 1 === start.offset
-                && preToken
-                && preToken.type === 'image'
-            ) {
-                needSelectImage = true;
-                needRender = true;
-                token.raw = token.raw.substring(1);
-                break;
-            }
-
-            preToken = token;
+        if (referenceImageToken) {
+            event.preventDefault();
+            event.stopPropagation();
+            const { start: from, end: to } = referenceImageToken.range;
+            this.text = text.substring(0, from) + text.substring(to);
+            this.setCursor(from, from, true);
+            return;
         }
 
         if (needRender) {
@@ -1351,24 +1342,124 @@ class Format extends Content {
             this.setCursor(start.offset, end.offset, true);
         }
 
-        if (needSelectImage) {
-            event.stopPropagation();
-            const images: NodeListOf<HTMLImageElement>
-                = this.domNode!.querySelectorAll(`.${CLASS_NAMES.MU_INLINE_IMAGE}`);
-            const imageWrapper = images[images.length - 1];
-            const imageInfo = getImageInfo(imageWrapper);
-
-            this.muya.editor.selection.selectedImage = Object.assign({}, imageInfo, {
-                block: this,
-            });
-            this.muya.editor.activeContentBlock = null;
-            this.muya.editor.selection.setSelection({
-                anchor: null,
-                focus: null,
-                block: this,
-                path: this.path,
-            });
+        if (imageToken) {
+            const images = this.domNode!.querySelectorAll<HTMLElement>(
+                `.${CLASS_NAMES.MU_INLINE_IMAGE}`,
+            );
+            let imageWrapper = images[images.length - 1];
+            for (const image of images) {
+                if (getImageInfo(image).token.range.start === imageToken.range.start) {
+                    imageWrapper = image;
+                    break;
+                }
+            }
+            this._selectInlineImage(event, imageWrapper);
         }
+    }
+
+    // Scan tokens for the one ending at the caret. Mutates the matched token's
+    // `raw` for the inline-syntax-marker cases (#113) so the caller can
+    // regenerate text; reports image / reference-image hits for the caller to
+    // delete or select.
+    private _scanBackspaceTokens(tokens: Token[], offset: number): {
+        needRender: boolean;
+        imageToken: Token | null;
+        referenceImageToken: Token | null;
+    } {
+        for (const token of tokens) {
+            // An inline image followed by other content: the caret lands on the
+            // next node at the image's end offset. Select the whole image so the
+            // next Backspace deletes it as a unit (matching muyajs interaction).
+            const isImageToken
+                = token.type === 'image'
+                    || (token.type === 'html_tag' && token.tag === 'img');
+            if (token.range.end === offset && isImageToken)
+                return { needRender: false, imageToken: token, referenceImageToken: null };
+
+            // A reference image (`![alt][ref]`) is editable marked text, so it has
+            // no inline-image wrapper to select. Delete the whole token at once.
+            if (token.range.end === offset && token.type === 'reference_image')
+                return { needRender: false, imageToken: null, referenceImageToken: token };
+
+            // handle delete the second marker(et:*、$) in inline syntax.(Firefox compatible)
+            // Fix: https://github.com/marktext/muya/issues/113
+            // for example: foo **strong**|
+            if (token.range.end === offset) {
+                token.raw = token.raw.substring(0, token.raw.length - 1);
+                return { needRender: true, imageToken: null, referenceImageToken: null };
+            }
+
+            // If preToken is a syntax token, the the cursor is at offset 1, need to set the cursor manually.(Firefox compatible)
+            // // Fix: https://github.com/marktext/muya/issues/113
+            // for example: foo **strong**w|
+            if (token.range.start + 1 === offset) {
+                token.raw = token.raw.substring(1);
+                return { needRender: true, imageToken: null, referenceImageToken: null };
+            }
+        }
+
+        return { needRender: false, imageToken: null, referenceImageToken: null };
+    }
+
+    // Resolve the real caret offset when the collapsed caret is parked on a
+    // trailing inline image, otherwise null. Inline images are
+    // `contenteditable=false`, so the browser parks the caret on the wrapper or
+    // inside the image container once nothing editable follows the image, and
+    // `getCursor` then reports an offset that collapses to the image's start
+    // (the image's own length is excluded). Report the image's end so the token
+    // scan treats it like any other caret-after-image. When other content
+    // follows the image the caret lands in that content (a reliable offset), so
+    // this returns null and the raw caret offset is used.
+    private _caretOffsetOnInlineImage(): number | null {
+        const selection = document.getSelection();
+        if (!selection || selection.rangeCount === 0 || !selection.isCollapsed)
+            return null;
+
+        const { anchorNode } = selection;
+        if (!anchorNode)
+            return null;
+
+        const element = isHTMLElement(anchorNode)
+            ? anchorNode
+            : anchorNode.parentElement;
+        const imageWrapper = element?.closest<HTMLElement>(
+            `.${CLASS_NAMES.MU_INLINE_IMAGE}`,
+        );
+        if (
+            !imageWrapper
+            || !this.domNode!.contains(imageWrapper)
+            || !this._isTrailingInlineImage(imageWrapper)
+        ) {
+            return null;
+        }
+
+        return getImageInfo(imageWrapper).token.range.end;
+    }
+
+    // Whether nothing editable follows the inline image in its content block, so
+    // a caret parked on it is after it rather than before a leading image.
+    private _isTrailingInlineImage(imageWrapper: HTMLElement): boolean {
+        let sibling = imageWrapper.nextSibling;
+        while (sibling) {
+            if ((sibling.textContent ?? '').length > 0)
+                return false;
+            sibling = sibling.nextSibling;
+        }
+
+        return true;
+    }
+
+    // Select the whole inline image. Stop propagation so this Backspace only
+    // selects; the next Backspace is handled by ImageSelection and deletes it.
+    private _selectInlineImage(event: Event, imageWrapper: HTMLElement): void {
+        event.preventDefault();
+        event.stopPropagation();
+        const imageInfo = getImageInfo(imageWrapper);
+        this.muya.editor.selection.selectImage(Object.assign({}, imageInfo, {
+            block: this,
+        }));
+        // Re-render so the inline image picks up the selected highlight class.
+        this.update();
     }
 
     override deleteHandler(event: KeyboardEvent): void {
@@ -1378,6 +1469,8 @@ class Format extends Content {
         if (start.offset !== end.offset || start.offset !== text.length)
             return;
 
+        this.muya.editor.history.markInputBoundary('deleteContentForward', null);
+
         const nextBlock = this.nextContentInContext();
         if (!nextBlock || nextBlock.blockName !== 'paragraph.content') {
             // If the next block is code content or table cell, nothing need to do.
@@ -1385,9 +1478,34 @@ class Format extends Content {
             return;
         }
 
-        const paragraphBlock = nextBlock.parent;
-        let needRemovedBlock = paragraphBlock;
+        event.preventDefault();
 
+        const paragraphBlock = nextBlock.parent!;
+
+        this.text = text + nextBlock.text;
+        this.setCursor(start.offset, end.offset, true);
+
+        // When the merge crosses a list-item boundary, blocks that followed the
+        // next paragraph inside its item (e.g. a nested sublist) must travel up
+        // with the merged text. Left behind they become the sole child of the
+        // now-empty item and serialize with a doubled bullet (#1845).
+        const paragraph = this.parent;
+        if (paragraph && paragraphBlock.parent !== paragraph.parent) {
+            const trailing: TreeNode[] = [];
+            let sibling = paragraphBlock.next;
+            while (sibling) {
+                trailing.push(sibling);
+                sibling = sibling.next;
+            }
+
+            let anchor: Parent = paragraph;
+            for (const block of trailing) {
+                block.insertInto(paragraph.parent!, anchor.next as Nullable<Parent>);
+                anchor = block as Parent;
+            }
+        }
+
+        let needRemovedBlock: Nullable<Parent> = paragraphBlock;
         while (
             needRemovedBlock
             && needRemovedBlock.isOnlyChild()
@@ -1395,13 +1513,10 @@ class Format extends Content {
         ) {
             needRemovedBlock = needRemovedBlock.parent;
         }
-
-        this.text = text + nextBlock.text;
-        this.setCursor(start.offset, end.offset, true);
         needRemovedBlock!.remove();
     }
 
-    shiftEnterHandler(event: Event): void {
+    protected shiftEnterHandler(event: Event): void {
         event.preventDefault();
         event.stopPropagation();
 
@@ -1414,6 +1529,7 @@ class Format extends Content {
 
     override enterHandler(event: KeyboardEvent): void {
         event.preventDefault();
+        this.muya.editor.history.markInputBoundary('insertParagraph', '\n');
         const { text: oldText, muya, parent } = this;
         const { start, end } = this.getCursor()!;
         this.text = oldText.substring(0, start.offset);
@@ -1435,7 +1551,7 @@ class Format extends Content {
         cursorBlock.setCursor(0, 0, true);
     }
 
-    getFormatsInRange(cursor = this.getCursor()) {
+    getFormatsInRange(cursor: IContentCursor | null = this.getCursor()) {
         if (cursor == null)
             return { formats: [], tokens: [], neighbors: [] };
 
@@ -1507,30 +1623,39 @@ class Format extends Content {
         // cache delta
         if (type === 'clear') {
             for (const neighbor of neighbors)
-                clearFormat(neighbor, { start, end });
+                clearFormat(neighbor, cursor);
 
             start.offset += start.delta;
             end.offset += end.delta;
 
-            this.text = generator(tokens);
+            this.text = generator(tokens, true);
         }
         else if (currentFormats.length) {
             for (const token of currentFormats)
-                clearFormat(token, { start, end });
+                clearFormat(token, cursor);
 
             start.offset += start.delta;
             end.offset += end.delta;
-            this.text = generator(tokens);
+            this.text = generator(tokens, true);
         }
         else {
             if (currentNeighbors.length) {
                 for (const neighbor of currentNeighbors)
-                    clearFormat(neighbor, { start, end });
+                    clearFormat(neighbor, cursor);
             }
 
             start.offset += start.delta;
             end.offset += end.delta;
-            this.text = generator(tokens);
+            this.text = generator(tokens, true);
+
+            // Whitespace wrapped inside emphasis markers is invalid CommonMark
+            // (`**foo **` is not right-flanking, so it renders literally), so
+            // trim the selection to its non-whitespace span before wrapping.
+            const selected = this.text.substring(start.offset, end.offset);
+            if (selected.trim().length > 0) {
+                start.offset += selected.length - selected.trimStart().length;
+                end.offset -= selected.length - selected.trimEnd().length;
+            }
 
             this._addFormat(type, { start, end });
 
@@ -1544,7 +1669,7 @@ class Format extends Content {
 
                         if (
                             imageWrapper
-                            && imageWrapper.classList.contains('mu-empty-image')
+                            && imageWrapper.classList.contains(CLASS_NAMES.MU_EMPTY_IMAGE)
                         ) {
                             const imageInfo = getImageInfo(imageWrapper);
                             const rect = imageWrapper.getBoundingClientRect();
@@ -1585,27 +1710,18 @@ class Format extends Content {
             case 'inline_math': {
                 const MARKER = FORMAT_MARKER_MAP[type];
                 const oldText = this.text;
-                const wasCollapsed = start.offset === end.offset;
                 this.text
                     = oldText.substring(0, start.offset)
                         + MARKER
                         + oldText.substring(start.offset, end.offset)
                         + MARKER
                         + oldText.substring(end.offset);
-                if (wasCollapsed) {
-                    // Toggle-format-then-type: keep caret between markers
-                    // so the next keystroke is captured INSIDE the format.
-                    start.offset += MARKER.length;
-                    end.offset += MARKER.length;
-                }
-                else {
-                    // Backport of marktext f3b53427: when wrapping a
-                    // non-empty selection, collapse the caret PAST the
-                    // closing marker so the next keystroke lands outside
-                    // the format instead of extending it.
-                    end.offset += MARKER.length * 2;
-                    start.offset = end.offset;
-                }
+                // Shift both offsets past the opening marker. A collapsed
+                // cursor stays between the markers (toggle-then-type lands
+                // INSIDE the format); a non-empty selection keeps the
+                // original text selected now that it sits inside the markers.
+                start.offset += MARKER.length;
+                end.offset += MARKER.length;
                 break;
             }
 
@@ -1618,21 +1734,17 @@ class Format extends Content {
             case 'u': {
                 const MARKER = FORMAT_TAG_MAP[type];
                 const oldText = this.text;
-                const wasCollapsed = start.offset === end.offset;
                 this.text
                     = oldText.substring(0, start.offset)
                         + MARKER.open
                         + oldText.substring(start.offset, end.offset)
                         + MARKER.close
                         + oldText.substring(end.offset);
-                if (wasCollapsed) {
-                    start.offset += MARKER.open.length;
-                    end.offset += MARKER.open.length;
-                }
-                else {
-                    end.offset += MARKER.open.length + MARKER.close.length;
-                    start.offset = end.offset;
-                }
+                // Shift both offsets past the opening tag: a collapsed cursor
+                // stays between the tags, a non-empty selection keeps the
+                // wrapped text selected.
+                start.offset += MARKER.open.length;
+                end.offset += MARKER.open.length;
                 break;
             }
 

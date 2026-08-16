@@ -77,8 +77,6 @@ const isCodeMirrorRaceCondition = (error: Error | null | undefined): boolean => 
 const handleRendererError = (event: ErrorEvent | PromiseRejectionEvent | Event): void => {
   const errorEvent = event as ErrorEvent
   if (errorEvent.error) {
-    // Suppress known non-fatal CodeMirror race conditions
-    // These occur during rapid clicking/editing and don't affect functionality
     if (isCodeMirrorRaceCondition(errorEvent.error)) {
       console.warn('Suppressed non-fatal CodeMirror race condition:', errorEvent.error.message)
       return
@@ -119,8 +117,8 @@ const bootstrapRenderer = (): void => {
     paths
   }
   // `global` is not available in a sandboxed renderer — attach to window.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  ;(window as any).marktext = marktext
+  // RendererPaths has no string index signature, so widen through `unknown`.
+  window.marktext = marktext as unknown as Window['marktext']
 
   configureLogger()
 }

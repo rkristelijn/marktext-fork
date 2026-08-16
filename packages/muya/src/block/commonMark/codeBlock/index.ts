@@ -2,7 +2,7 @@ import type { Muya } from '../../../muya';
 import type { ICodeBlockState } from '../../../state/types';
 import type { TBlockPath } from '../../types';
 import diff from 'fast-diff';
-import { diffToTextOp } from '../../../utils';
+import { diffToTextOp, firstWordOfInfo } from '../../../utils';
 import { operateClassName } from '../../../utils/dom';
 import logger from '../../../utils/logger';
 import { loadLanguage } from '../../../utils/prism';
@@ -27,6 +27,21 @@ class CodeBlock extends Parent {
 
         codeBlock.append(langInput);
         codeBlock.append(code);
+
+        // Move the line-numbers gutter from .mu-code into the pre so that
+        // .mu-code's overflow (hidden/auto) does not clip the left-side gutter.
+        // The pre already has position:relative and padding-left:2.5em for this.
+        const lnWrapper = (code as { lineNumbersWrapper?: HTMLElement | null }).lineNumbersWrapper;
+        if (lnWrapper) {
+            codeBlock.domNode!.appendChild(lnWrapper);
+            // The gutter fills from CodeBlockContent.update(), a no-op until the
+            // tree is wired. The language-load callback below re-runs it, but
+            // language-less / unknown-language / indented blocks never load one —
+            // seed them here so first render fills the gutter regardless of language.
+            requestAnimationFrame(() => {
+                codeBlock.lastContentInDescendant()?.update();
+            });
+        }
 
         if (lang) {
             requestAnimationFrame(() => {
@@ -57,8 +72,10 @@ class CodeBlock extends Parent {
             operateClassName(this.domNode!, 'add', 'mu-fenced-code');
         }
 
-        !!value
-        && loadLanguage(value)
+        // `value` is the full info string; load Prism for its first word only.
+        const language = firstWordOfInfo(value);
+        !!language
+        && loadLanguage(language)
             .then((infoList) => {
                 if (!Array.isArray(infoList))
                     return;

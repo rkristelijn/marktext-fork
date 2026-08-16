@@ -42,7 +42,6 @@ test.describe('Crash: setStart Range offset', () => {
     if (app) await app.close()
   })
 
-  // Recipe from #2526.
   test('Issue #2526: typing escaped <pre>...</pre> then re-selecting does not crash', async() => {
     // Type literal `\<pre\>some text\</pre\>` as the user described.
     await typeIntoEditor(page, '\\<pre\\>some text\\</pre\\>')
@@ -64,7 +63,6 @@ test.describe('Crash: setStart Range offset', () => {
     await expectNoRendererErrors(app)
   })
 
-  // Recipe from #3737 — backspace at the start of a code block.
   test('Issue #3737: backspace at start of a code block does not crash', async() => {
     // Build a code block via the markdown source-mode round-trip.
     // (Code blocks are rendered as CodeMirror instances inside Muya; the
@@ -77,7 +75,7 @@ test.describe('Crash: setStart Range offset', () => {
 
     // Click into the code block.
     await page.evaluate(() => {
-      const block = document.querySelector('.editor-component .CodeMirror, .editor-component pre.ag-active')
+      const block = document.querySelector('.editor-component .CodeMirror, .editor-component pre.mu-active')
       if (block) (block as HTMLElement).click()
     })
     await page.waitForTimeout(150)
@@ -154,7 +152,7 @@ test.describe('Crash: setStart Range offset', () => {
 
     // Click into the first list item and press Enter several times
     await page.evaluate(() => {
-      const first = document.querySelector('.editor-component ul li span.ag-paragraph') as HTMLElement | null
+      const first = document.querySelector('.editor-component ul li span.mu-paragraph-content') as HTMLElement | null
       if (!first) return
       const range = document.createRange()
       range.selectNodeContents(first)
@@ -224,7 +222,7 @@ test.describe('Crash: paste-induced setCursorRange', () => {
       '<table><tbody><tr><td>a</td><td>b</td></tr></tbody></table>' +
       '<p>And inline math: <span class="math">a+b</span></p>'
     await page.evaluate((h) => {
-      const target = document.querySelector('.editor-component span.ag-paragraph') as HTMLElement | null
+      const target = document.querySelector('.editor-component span.mu-paragraph-content') as HTMLElement | null
       if (!target) return
       const range = document.createRange()
       range.selectNodeContents(target)
@@ -246,7 +244,7 @@ test.describe('Crash: paste-induced setCursorRange', () => {
   test('Paste then immediate cursor-shuffle does not crash', async() => {
     const html = '<p>x<b>y</b>z <em>e</em><code>c</code></p>'.repeat(20)
     await page.evaluate((h) => {
-      const target = document.querySelector('.editor-component span.ag-paragraph') as HTMLElement | null
+      const target = document.querySelector('.editor-component span.mu-paragraph-content') as HTMLElement | null
       if (!target) return
       const range = document.createRange()
       range.selectNodeContents(target)

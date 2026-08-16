@@ -52,7 +52,7 @@ const patchTheme = (css: string): string => {
 
 const getEmojiPickerPatch = (): string => {
   return isLinux
-    ? '.ag-emoji-picker section .emoji-wrapper .item span { font-family: sans-serif, "Noto Color Emoji"; }'
+    ? '.mu-emoji-picker section .emoji-wrapper .item span { font-family: sans-serif, "Noto Color Emoji"; }'
     : ''
 }
 
@@ -69,7 +69,9 @@ export const addThemeStyle = (theme: string): void => {
 
   switch (theme) {
     case 'light':
-      themeStyleEle.innerHTML = ''
+      themeStyleEle.innerHTML = patchTheme(
+        ':root {\n  --link-color: var(--linkColor);\n  --blockquote-border-color: var(--blockquoteBorderColor);\n}'
+      )
       break
     case 'dark':
       themeStyleEle.innerHTML = patchTheme(dark())
@@ -195,32 +197,15 @@ export const addThemeStyle = (theme: string): void => {
   }
 }
 
-export const setWrapCodeBlocks = (value: boolean): void => {
-  const CODE_WRAP_STYLE_ID = 'ag-code-wrap'
-  let result = ''
-  if (value) {
-    result =
-      '.ag-code-content { display: block; white-space: pre-wrap; word-break: break-word; overflow: hidden; }'
-  } else {
-    result =
-      '.ag-code-content { display: block; white-space: pre; word-break: break-word; overflow: auto; }'
-  }
-  let styleEle = document.querySelector(`#${CODE_WRAP_STYLE_ID}`) as HTMLStyleElement | null
-  if (!styleEle) {
-    styleEle = document.createElement('style')
-    styleEle.setAttribute('id', CODE_WRAP_STYLE_ID)
-    document.head.appendChild(styleEle)
-  }
-
-  styleEle.innerHTML = result
-}
-
 export const setEditorWidth = (value: string): void => {
   const EDITOR_WIDTH_STYLE_ID = 'editor-width'
   let result = ''
   if (value && /^[0-9]+(?:ch|px|%)$/.test(value)) {
-    // Overwrite the theme value and add 100px for padding.
-    result = `:root { --editorAreaWidth: calc(100px + ${value}); }`
+    // Add 100px for the container's horizontal padding. Set both the legacy
+    // camelCase var (source mode) and the kebab-case var the active
+    // @muyajs/core engine reads for `.mu-container` max-width (issue #4828).
+    const width = `calc(100px + ${value})`
+    result = `:root { --editorAreaWidth: ${width}; --editor-area-width: ${width}; }`
   }
   let styleEle = document.querySelector(`#${EDITOR_WIDTH_STYLE_ID}`) as HTMLStyleElement | null
   if (!styleEle) {
@@ -254,13 +239,7 @@ export const addCommonStyle = (options: CommonStyleOptions): void => {
   }
 
   sheet.innerHTML = `${scrollbarStyle}
-span code,
-td code,
-th code,
-code,
-code[class*="language-"],
-.CodeMirror,
-pre.ag-paragraph {
+.CodeMirror {
 font-family: ${codeFontFamily}, ${DEFAULT_CODE_FONT_FAMILY};
 font-size: ${codeFontSize}px;
 }

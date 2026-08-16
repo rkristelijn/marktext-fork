@@ -1,8 +1,7 @@
-import type Parent from '../../block/base/parent';
-import type { Muya } from '../../index';
 import bulletListIcon from '../../assets/icons/bullet_list/2.png';
 import vegaIcon from '../../assets/icons/chart/2.png';
 import codeIcon from '../../assets/icons/code/2.png';
+import flowchartIcon from '../../assets/icons/flowchart/2.png';
 import frontMatterIcon from '../../assets/icons/front_matter/2.png';
 import header1Icon from '../../assets/icons/heading_1/2.png';
 import header2Icon from '../../assets/icons/heading_2/2.png';
@@ -19,17 +18,11 @@ import orderListIcon from '../../assets/icons/order_list/2.png';
 import paragraphIcon from '../../assets/icons/paragraph/2.png';
 import plantumlIcon from '../../assets/icons/plantuml/2.png';
 import quoteIcon from '../../assets/icons/quote_block/2.png';
+import sequenceIcon from '../../assets/icons/sequence/2.png';
 
 import todoListIcon from '../../assets/icons/todolist/2.png';
-import { ScrollPage } from '../../block/scrollPage';
 import { isOsx } from '../../config';
-
-import emptyStates from '../../config/emptyStates';
-import { isParagraphState } from '../../state/types';
-import { deepClone, isKeyboardEvent } from '../../utils';
-import logger from '../../utils/logger';
-
-const debug = logger('quickInsert:');
+import { isKeyboardEvent } from '../../utils';
 
 const COMMAND_KEY = isOsx ? '⌘' : 'Ctrl';
 const OPTION_KEY = isOsx ? '⌥' : 'Alt';
@@ -107,10 +100,10 @@ export const MENU_CONFIG: IQuickInsertMenuItem[] = [
         ],
     },
     {
-        name: 'headers',
+        name: 'headings',
         children: [
             {
-                title: 'Header 1',
+                title: 'Heading 1',
                 subTitle: '# Lorem Ipsum...',
                 label: 'atx-heading 1',
                 shortCut: `${COMMAND_KEY}+1`,
@@ -123,7 +116,7 @@ export const MENU_CONFIG: IQuickInsertMenuItem[] = [
                 icon: header1Icon,
             },
             {
-                title: 'Header 2',
+                title: 'Heading 2',
                 subTitle: '## Lorem Ipsum...',
                 label: 'atx-heading 2',
                 shortCut: `${COMMAND_KEY}+2`,
@@ -136,7 +129,7 @@ export const MENU_CONFIG: IQuickInsertMenuItem[] = [
                 icon: header2Icon,
             },
             {
-                title: 'Header 3',
+                title: 'Heading 3',
                 subTitle: '### Lorem Ipsum...',
                 label: 'atx-heading 3',
                 shortCut: `${COMMAND_KEY}+3`,
@@ -149,7 +142,7 @@ export const MENU_CONFIG: IQuickInsertMenuItem[] = [
                 icon: header3Icon,
             },
             {
-                title: 'Header 4',
+                title: 'Heading 4',
                 subTitle: '#### Lorem Ipsum...',
                 label: 'atx-heading 4',
                 shortCut: `${COMMAND_KEY}+4`,
@@ -162,7 +155,7 @@ export const MENU_CONFIG: IQuickInsertMenuItem[] = [
                 icon: header4Icon,
             },
             {
-                title: 'Header 5',
+                title: 'Heading 5',
                 subTitle: '##### Lorem Ipsum...',
                 label: 'atx-heading 5',
                 shortCut: `${COMMAND_KEY}+5`,
@@ -175,7 +168,7 @@ export const MENU_CONFIG: IQuickInsertMenuItem[] = [
                 icon: header5Icon,
             },
             {
-                title: 'Header 6',
+                title: 'Heading 6',
                 subTitle: '###### Lorem Ipsum...',
                 label: 'atx-heading 6',
                 shortCut: `${COMMAND_KEY}+6`,
@@ -326,6 +319,18 @@ export const MENU_CONFIG: IQuickInsertMenuItem[] = [
                 label: 'diagram plantuml',
                 icon: plantumlIcon,
             },
+            {
+                title: 'Flowchart',
+                subTitle: 'By flowchart.js',
+                label: 'diagram flowchart',
+                icon: flowchartIcon,
+            },
+            {
+                title: 'Sequence',
+                subTitle: 'By js-sequence-diagrams',
+                label: 'diagram sequence',
+                icon: sequenceIcon,
+            },
         ],
     },
 ];
@@ -352,146 +357,4 @@ export function getLabelFromEvent(event: Event) {
 
     if (result)
         return result.label;
-}
-
-export function replaceBlockByLabel({ block, muya, label, text = '' }: {
-    block: Parent;
-    muya: Muya;
-    label: string;
-    text?: string;
-}) {
-    const {
-        preferLooseListItem,
-        bulletListMarker,
-        orderListDelimiter,
-        frontmatterType,
-    } = muya.options;
-    let newBlock = null;
-    let state = null;
-    let cursorBlock = null;
-
-    switch (label) {
-        case 'paragraph':
-            // fall through
-        case 'thematic-break':
-            // fall through
-        case 'table':
-            // fall through
-        case 'math-block':
-            // fall through
-        case 'html-block':
-            // fall through
-        case 'code-block':
-            // fall through
-        case 'block-quote': {
-            const cloned = deepClone(emptyStates[label]);
-            if (cloned.name === 'paragraph') {
-                cloned.text = text;
-            }
-            else if (cloned.name === 'block-quote') {
-                const inner = cloned.children[0];
-                if (isParagraphState(inner))
-                    inner.text = text;
-            }
-            state = cloned;
-            newBlock = ScrollPage.loadBlock(label).create(muya, state);
-            break;
-        }
-
-        case 'frontmatter': {
-            const fmState = deepClone(emptyStates.frontmatter);
-            fmState.meta.style = frontmatterType;
-            fmState.meta.lang = /\+-/.test(frontmatterType) ? 'yaml' : 'json';
-            state = fmState;
-            newBlock = ScrollPage.loadBlock(label).create(muya, state);
-            break;
-        }
-
-        case 'atx-heading 1':
-            // fall through
-        case 'atx-heading 2':
-            // fall through
-        case 'atx-heading 3':
-            // fall through
-        case 'atx-heading 4':
-            // fall through
-        case 'atx-heading 5':
-            // fall through
-        case 'atx-heading 6': {
-            const headingState = deepClone(emptyStates['atx-heading']);
-
-            const [blockName, level] = label.split(' ');
-            headingState.meta.level = +level;
-            headingState.text = `${'#'.repeat(+level)} ${text}`;
-            state = headingState;
-            newBlock = ScrollPage.loadBlock(blockName).create(muya, state);
-            break;
-        }
-
-        case 'order-list': {
-            const orderState = deepClone(emptyStates[label]);
-            orderState.meta.loose = preferLooseListItem;
-            orderState.meta.delimiter = orderListDelimiter;
-            const firstChild = orderState.children[0].children[0];
-            if (text && isParagraphState(firstChild))
-                firstChild.text = text;
-
-            state = orderState;
-            newBlock = ScrollPage.loadBlock(label).create(muya, state);
-            break;
-        }
-
-        case 'bullet-list':
-            // fall through
-        case 'task-list': {
-            const listState = deepClone(emptyStates[label]);
-            listState.meta.loose = preferLooseListItem;
-            listState.meta.marker = bulletListMarker;
-            const firstChild = listState.children[0].children[0];
-            if (text && isParagraphState(firstChild))
-                firstChild.text = text;
-
-            state = listState;
-            newBlock = ScrollPage.loadBlock(label).create(muya, state);
-            break;
-        }
-
-        case 'diagram vega-lite':
-            // fall through
-        case 'diagram mermaid':
-            // fall through
-        case 'diagram plantuml': {
-            const diagramState = deepClone(emptyStates.diagram);
-
-            const [name, type] = label.split(' ');
-            if (type === 'mermaid' || type === 'plantuml' || type === 'vega-lite') {
-                diagramState.meta.type = type;
-                diagramState.meta.lang = type === 'vega-lite' ? 'json' : 'yaml';
-            }
-            state = diagramState;
-            newBlock = ScrollPage.loadBlock(name).create(muya, state);
-            break;
-        }
-
-        default:
-            debug.log('Unknown label in quick insert');
-            break;
-    }
-
-    block.replaceWith(newBlock);
-    if (label === 'thematic-break') {
-        const nextParagraphBlock = ScrollPage.loadBlock('paragraph').create(
-            muya,
-            deepClone(emptyStates.paragraph),
-        );
-        newBlock.parent.insertAfter(nextParagraphBlock, newBlock);
-        cursorBlock = nextParagraphBlock.firstContentInDescendant();
-        cursorBlock.setCursor(0, 0, true);
-    }
-    else {
-        cursorBlock = newBlock.firstContentInDescendant();
-        // Set the cursor between <div>\n\n</div> when create html-block
-        const offset = label === 'html-block' ? 6 : cursorBlock.text.length;
-        cursorBlock.setCursor(offset, offset, true);
-    }
 }

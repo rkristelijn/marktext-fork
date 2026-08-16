@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code when working inside `packages/muya`.
 
-> **Location.** `packages/muya` is the TypeScript rewrite of muya (upstream: <https://github.com/marktext/muya>), migrated into this marktext monorepo. The legacy JS engine `packages/muyajs` (`@marktext/muyajs`) is still what the desktop app consumes via the `muya/` alias; the two engines coexist until callers are migrated. Treat `packages/muya` as a self-contained package — do not import from or wire into desktop code yet.
+> **Location.** `packages/muya` is the TypeScript rewrite of muya (upstream: <https://github.com/marktext/muya>), migrated into this marktext monorepo and published as `@muyajs/core`. The desktop renderer now consumes `@muyajs/core` as its editor engine; the legacy JS engine `packages/muyajs` (`@marktext/muyajs`, the `muya/` alias) is being retired and only a handful of call sites still reference it. `packages/muya` keeps its own toolchain (ESLint/antfu, stylelint, madge, vitest), and the marktext-root ESLint ignores `packages/muya/**` — treat it as a self-contained package with its own conventions.
 
 ## Layout inside `packages/muya`
 
@@ -71,6 +71,29 @@ Each subfolder is a floating tool/menu (inline format toolbar, image tools, para
 ### Public API surface
 
 `src/index.ts` is the published entrypoint. The `exports` map in `package.json` points `.` at `./src/index.ts` during development and `./lib/es/index.js` after publish — keep this file the single export hub.
+
+### Appearance contract (typography)
+
+muya renders its own content's typography from two equivalent inputs — pass
+options, or override the CSS custom properties directly (pure-CSS theming).
+The variables are set on the editor root (`.mu-editor`) and consumed by the
+bundled stylesheets; each has a default baked into the CSS, so passing nothing
+renders the standalone defaults.
+
+| Option (`IMuyaOptions`) | CSS variable | Default | Applies to |
+|---|---|---|---|
+| `fontSize` (number, px) | `--mu-font-size` | `16px` | `.mu-editor` base text |
+| `lineHeight` (number) | `--mu-line-height` | `1.6` | `.mu-editor` base text |
+| `editorFontFamily` (string) | `--mu-font-family` | Open Sans stack | `.mu-editor` base text |
+| `codeFontSize` (number, px) | `--mu-code-font-size` | `90%` | `.mu-code-block` only |
+| `codeFontFamily` (string) | `--mu-code-font-family` | DejaVu Sans Mono stack | `.mu-code-block` only |
+| `wrapCodeBlocks` (boolean) | — (`.mu-code-wrap` root class) | off (`pre`) | code-block line wrapping |
+
+Inline code (`code.mu-inline-rule`) is deliberately NOT driven by these — it
+keeps its relative `0.8em` / mono sizing. Editor column width
+(`--editor-area-width`) and the colour palette (`--editor-color-*`) are
+separate, pre-existing contracts owned by the host. All runtime changes go
+through `muya.setOptions({...})`.
 
 ## Conventions enforced by tooling
 

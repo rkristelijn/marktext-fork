@@ -3,6 +3,8 @@ import antfu from '@antfu/eslint-config';
 import parser from '@typescript-eslint/parser';
 
 function typescriptPreset() {
+    const memberSelectors = ['classProperty', 'classMethod', 'parameterProperty', 'classicAccessor', 'autoAccessor'];
+
     return {
         files: ['**/*.ts', '**/*.tsx'],
         rules: {
@@ -27,7 +29,7 @@ function typescriptPreset() {
                 },
             ],
             'ts/naming-convention': [
-                'warn',
+                'error',
                 // Interfaces' names should start with a capital 'I'.
                 {
                     selector: 'interface',
@@ -37,9 +39,16 @@ function typescriptPreset() {
                         match: true,
                     },
                 },
-                // Private fields of a class should start with an underscore '_'.
+                // `_` <=> private: this block forbids a leading `_` on every member;
+                // the private block below (more specific, so it wins regardless of
+                // order) requires it. `format: null` checks only the underscore.
                 {
-                    selector: ['classMethod', 'classProperty'],
+                    selector: memberSelectors,
+                    format: null,
+                    leadingUnderscore: 'forbid',
+                },
+                {
+                    selector: memberSelectors,
                     modifiers: ['private'],
                     format: ['camelCase'],
                     leadingUnderscore: 'require',
@@ -56,6 +65,11 @@ function typescriptPreset() {
 // classes (`fake as unknown as Table`); policing the double-cast pattern
 // there adds noise without safety. Disable only `no-restricted-syntax` —
 // `ts/no-explicit-any` and `ts/naming-convention` stay on for tests.
+//
+// The parity-scoreboard specs name every test after its gap id
+// (`PG3: …`) so fix PRs can grep + flip the `it.fails` marker. Allow that
+// uppercase `PG` prefix through `prefer-lowercase-title`; all other test
+// titles still have to start lowercase.
 function testFileDoubleCastOverride() {
     return {
         files: [
@@ -66,6 +80,7 @@ function testFileDoubleCastOverride() {
         ],
         rules: {
             'no-restricted-syntax': 'off',
+            'test/prefer-lowercase-title': ['error', { allowedPrefixes: ['PG'] }],
         },
     };
 }
@@ -99,6 +114,11 @@ export default antfu(
             'e2e/**',
             'lib/**',
             'docs/**',
+            // Vendored third-party library (js-sequence-diagrams, bramp, BSD)
+            // wired to snap.svg. Kept verbatim for feature parity with the
+            // legacy muyajs engine; not subject to our lint/format rules.
+            'src/utils/diagram/sequence/sequence-diagram-snap.js',
+            'src/utils/diagram/sequence/sequence-diagram.css',
         ],
     },
     {

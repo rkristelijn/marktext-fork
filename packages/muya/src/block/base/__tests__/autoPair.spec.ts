@@ -266,3 +266,65 @@ describe('autoPair — bbea7eca skip when preInputChar is alphanumeric', () => {
         expect(needRender).toBe(false);
     });
 });
+
+// ── option toggles disable the individual auto-pair behaviours ────────────
+// Each of `autoPairBracket`, `autoPairMarkdownSyntax`, `autoPairQuote`
+// gates exactly one branch in `autoPair`. When the option is `false` the
+// branch must NOT fire: the typed character is left as-is with no inserted
+// closer and `needRender` stays `false`. These pin the per-option opt-out
+// so a future refactor can't silently re-enable a disabled behaviour.
+describe('autoPair — per-option opt-out', () => {
+    it('does not pair `(` when autoPairBracket is false', () => {
+        const fakeThis = makeFakeThis('foo', 3, { autoPairBracket: false });
+        const event = makeInputEvent('insertText', '(');
+        const { text, needRender } = invokeAutoPair(fakeThis, event, 'foo(', 4);
+
+        expect(text).toBe('foo(');
+        expect(needRender).toBe(false);
+    });
+
+    it('does not pair `*` after a space when autoPairMarkdownSyntax is false', () => {
+        const fakeThis = makeFakeThis('foo ', 4, { autoPairMarkdownSyntax: false });
+        const event = makeInputEvent('insertText', '*');
+        const { text, needRender } = invokeAutoPair(fakeThis, event, 'foo *', 5);
+
+        expect(text).toBe('foo *');
+        expect(needRender).toBe(false);
+    });
+
+    it('does not pair `"` when autoPairQuote is false', () => {
+        const fakeThis = makeFakeThis('foo', 3, { autoPairQuote: false });
+        const event = makeInputEvent('insertText', '"');
+        const { text, needRender } = invokeAutoPair(fakeThis, event, 'foo"', 4);
+
+        expect(text).toBe('foo"');
+        expect(needRender).toBe(false);
+    });
+});
+
+// ── marktext #3573 absorb manually typed closing markdown marker ──────────
+// With auto-pair on, typing `_` inserts `_|_`. Typing text then the closing
+// `_` should "type over" the auto-paired closing marker (-> `_text_`), but
+// the old `shouldRemoveClosingChar` only absorbed when the char two before
+// the caret was itself a formatting char, so a closing `_` after normal text
+// left a stray trailing `_` (`_text__`).
+describe('autoPair — #3573 absorb manually typed closing markdown marker', () => {
+    it('absorbs the closing `_` typed over the auto-paired one after text', () => {
+        // "_something|_" + type "_" -> browser yields "_something__" @ offset 11
+        const fakeThis = makeFakeThis('_something_', 10);
+        const event = makeInputEvent('insertText', '_');
+        const { text, needRender } = invokeAutoPair(fakeThis, event, '_something__', 11);
+
+        expect(text).toBe('_something_');
+        expect(needRender).toBe(true);
+    });
+
+    it('still doubles `*` into a bold opener (does not absorb marker doubling)', () => {
+        // "*|*" (auto-paired italic) + type "*" -> "***"; must NOT collapse to "**"
+        const fakeThis = makeFakeThis('**', 1);
+        const event = makeInputEvent('insertText', '*');
+        const { text } = invokeAutoPair(fakeThis, event, '***', 2);
+
+        expect(text).not.toBe('**');
+    });
+});

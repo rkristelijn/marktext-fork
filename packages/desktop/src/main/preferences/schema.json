@@ -67,7 +67,7 @@
     "type": "string"
   },
   "language": {
-    "description": "General--The language MarkText use.",
+    "description": "General--The language MarkText uses.",
     "type": "string",
     "default": "en"
   },
@@ -233,7 +233,7 @@
     "default": "-"
   },
   "orderListDelimiter": {
-    "description": "Markdown--The dilimiter used in order list",
+    "description": "Markdown--The delimiter used in order list",
     "enum": [".", ")"],
     "default": "."
   },
@@ -281,6 +281,12 @@
     "description": "Markdown--Sequence diagram theme",
     "enum": ["hand", "simple"],
     "default": "hand"
+  },
+  "plantumlServer": {
+    "description": "Markdown--PlantUML server URL for rendering diagrams",
+    "type": "string",
+    "pattern": "^(https?://|$)",
+    "default": "https://www.plantuml.com/plantuml"
   },
   "theme": {
     "description": "Theme--Select the theme used in MarkText",

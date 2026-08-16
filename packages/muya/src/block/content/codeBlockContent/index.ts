@@ -1,5 +1,5 @@
 import type { Muya } from '../../../muya';
-import type { ICursor } from '../../../selection/types';
+import type { IRenderCursor } from '../../../selection/types';
 import type {
     CodeContentState,
     ICodeBlockState,
@@ -9,8 +9,8 @@ import type {
 import type Code from '../../commonMark/codeBlock/code';
 import type HTMLPreview from '../../commonMark/html/htmlPreview';
 import { HTML_TAGS, VOID_HTML_TAGS } from '../../../config';
-import { adjustOffset, escapeHTML } from '../../../utils';
-import { computeLineCount, syncLineNumbersSpans } from '../../../utils/codeBlockLineNumbers';
+import { adjustOffset, escapeHTML, firstWordOfInfo } from '../../../utils';
+import { computeLineCount, repositionLineNumberSpans, syncLineNumbersSpans } from '../../../utils/codeBlockLineNumbers';
 import { getHighlightHtml, MARKER_HASH } from '../../../utils/highlightHTML';
 import prism, { loadedLanguages, transformAliasToOrigin, walkTokens } from '../../../utils/prism/index';
 import Content from '../../base/content';
@@ -22,8 +22,12 @@ function checkAutoIndent(text: string, offset: number) {
     return /^(?:\{\}|\[\]|\(\)|><)$/.test(pairStr);
 }
 
-function getIndentSpace(text: string) {
-    const match = /^(\s*)\S/.exec(text);
+function getIndentSpace(text: string, offset: number) {
+    const lineStart = text.lastIndexOf('\n', offset - 1) + 1;
+    let lineEnd = text.indexOf('\n', lineStart);
+    if (lineEnd === -1)
+        lineEnd = text.length;
+    const match = /^(\s*)\S/.exec(text.slice(lineStart, lineEnd));
 
     return match ? match[1] : '';
 }
@@ -82,7 +86,7 @@ function hasStateMeta(
 }
 
 class CodeBlockContent extends Content {
-    public initialLang: string;
+    private _initialLang: string;
     public override parent: Code | null = null;
 
     static override blockName = 'codeblock.content';
@@ -93,33 +97,44 @@ class CodeBlockContent extends Content {
         return content;
     }
 
-    get lang() {
-        const { codeContainer } = this;
+    // The language word for highlighting / tokenizing — the first word of the
+    // code container's info string (which may carry attributes, e.g.
+    // `js title="x"`). Every consumer of `_lang` wants the language, never the
+    // full info string (that is read from `meta.lang` directly by the language
+    // input), so derive it once here.
+    private get _lang() {
+        const { _codeContainer: codeContainer } = this;
 
-        return codeContainer ? codeContainer.lang : this.initialLang;
+        return firstWordOfInfo(codeContainer ? codeContainer.lang : this._initialLang);
     }
 
     /**
      * Always be the `pre` element
      */
-    get codeContainer() {
+    private get _codeContainer() {
         return this.parent?.parent;
     }
 
     get outContainer() {
-        const { codeContainer } = this;
+        const { _codeContainer: codeContainer } = this;
 
         return /code-block|frontmatter/.test(codeContainer!.blockName)
             ? codeContainer
             : codeContainer!.parent;
     }
 
+    // The text the preview was last rendered from. Seeded with the initial
+    // text so the create-pass update() does not re-trigger a render that races
+    // the preview's own one-shot render on append (async for diagrams).
+    private _lastPreviewText: string;
+
     constructor(muya: Muya, state: CodeContentState) {
         super(muya, state.text);
+        this._lastPreviewText = state.text;
         if (hasStateMeta(state))
-            this.initialLang = state.meta.lang;
+            this._initialLang = state.meta.lang;
         else
-            this.initialLang = LANG_HASH[state.name];
+            this._initialLang = LANG_HASH[state.name];
 
         this.classList = [...this.classList, 'mu-codeblock-content'];
         // Used for empty status prompts
@@ -133,13 +148,24 @@ class CodeBlockContent extends Content {
     }
 
     // Some block has a preview container, like math, diagram, html, should update the preview if the text changed.
-    updatePreviewIfHave(text: string) {
+    private _updatePreviewIfHave(text: string) {
+        // update() runs during the initial create pass before this block is
+        // attached, when outContainer cannot resolve its parent chain.
+        if (!this._codeContainer)
+            return;
+        // Only re-render when the text actually changed. update() is called on
+        // every render pass; without this guard a diagram's create-pass render
+        // and update()'s render race (DiagramPreview.update is async), leaving
+        // the SVG unmounted.
+        if (text === this._lastPreviewText)
+            return;
+        this._lastPreviewText = text;
         if (this.outContainer?.attachments?.length)
             (this.outContainer?.attachments?.head as HTMLPreview).update(text);
     }
 
-    override update(_cursor: ICursor, highlights = []) {
-        const { lang, text } = this;
+    override update(_cursor?: IRenderCursor, highlights = []) {
+        const { _lang: lang, text } = this;
         // transform alias to original language
         const fullLengthLang = transformAliasToOrigin([lang])[0];
         const domNode = this.domNode!;
@@ -166,9 +192,13 @@ class CodeBlockContent extends Content {
         }
 
         this._updateLineNumbers(text);
+        // Re-render the math/diagram/html preview too; undo/redo reaches this
+        // block only through update(), not inputHandler (#1632).
+        this._updatePreviewIfHave(text);
     }
 
     private _lastLineCount = -1;
+    private _lineNumberResizeObserver: ResizeObserver | null = null;
 
     private _updateLineNumbers(text: string) {
         if (!this.muya.options.codeBlockLineNumbers)
@@ -177,10 +207,27 @@ class CodeBlockContent extends Content {
         if (wrapper == null)
             return;
         const count = computeLineCount(text);
-        if (count === this._lastLineCount)
+        if (count !== this._lastLineCount) {
+            syncLineNumbersSpans(wrapper, count);
+            this._lastLineCount = count;
+        }
+        this._observeLineNumberResize(wrapper);
+    }
+
+    // Re-measure the gutter after any code-block reflow (initial render, font /
+    // wrap change, content edit, viewport resize). Fires post-layout, so it
+    // can't read stale positions; owns all repositioning.
+    private _observeLineNumberResize(wrapper: HTMLElement) {
+        if (this._lineNumberResizeObserver != null || typeof ResizeObserver === 'undefined')
             return;
-        syncLineNumbersSpans(wrapper, count);
-        this._lastLineCount = count;
+        const codeEl = this.domNode!;
+        this._lineNumberResizeObserver = new ResizeObserver(() => {
+            if (codeEl.isConnected && wrapper.isConnected)
+                repositionLineNumberSpans(wrapper, codeEl);
+            else
+                this._lineNumberResizeObserver?.disconnect();
+        });
+        this._lineNumberResizeObserver.observe(codeEl);
     }
 
     override inputHandler(event: Event): void {
@@ -200,7 +247,7 @@ class CodeBlockContent extends Content {
         );
         this.text = text;
 
-        this.updatePreviewIfHave(text);
+        this._updatePreviewIfHave(text);
 
         if (needRender) {
             this.setCursor(start!.offset, end!.offset, true);
@@ -243,7 +290,7 @@ class CodeBlockContent extends Content {
         const { start } = this.getCursor()!;
         const { text } = this;
         const autoIndent = checkAutoIndent(text, start.offset);
-        const indent = getIndentSpace(text);
+        const indent = getIndentSpace(text, start.offset);
 
         this.text
             = `${text.substring(0, start.offset)
@@ -263,7 +310,7 @@ class CodeBlockContent extends Content {
     override tabHandler(event: KeyboardEvent): void {
         event.preventDefault();
         const { start, end } = this.getCursor()!;
-        const { lang, text } = this;
+        const { _lang: lang, text } = this;
         const isMarkupCodeContent = /markup|html|xml|svg|mathml/.test(lang);
 
         if (isMarkupCodeContent) {
@@ -362,7 +409,7 @@ class CodeBlockContent extends Content {
             event.preventDefault();
             const { text } = this;
             this.text = text.substring(0, start.offset - 1) + text.substring(start.offset);
-            this.updatePreviewIfHave(this.text);
+            this._updatePreviewIfHave(this.text);
             return this.setCursor(--start.offset, --end.offset, true);
         }
         // The following code is aimed at ensuring compatibility with Firefox.
@@ -371,11 +418,11 @@ class CodeBlockContent extends Content {
         // the backspace key is pressed in Firefox. Therefore, we need to manually
         // simulate the backspace key in order to set the cursor position correctly.
         if (start.offset === end.offset) {
-            const { lang, text } = this;
+            const { _lang: lang, text } = this;
             // transform alias to original language
             const fullLengthLang = transformAliasToOrigin([lang])[0];
             if (fullLengthLang && /\S/.test(text) && loadedLanguages.has(fullLengthLang)) {
-                const tokens = prism.tokenize(text, prism.languages[lang]);
+                const tokens = prism.tokenize(text, prism.languages[fullLengthLang]);
                 let offset = start.offset;
                 let code = '';
                 let needRender = false;
@@ -397,7 +444,7 @@ class CodeBlockContent extends Content {
                 if (needRender) {
                     event.preventDefault();
                     this.text = code;
-                    this.updatePreviewIfHave(this.text);
+                    this._updatePreviewIfHave(this.text);
                     return this.setCursor(--start.offset, --end.offset, true);
                 }
             }
@@ -416,9 +463,7 @@ class CodeBlockContent extends Content {
             anchor.offset !== oldAnchor?.offset
             || focus.offset !== oldFocus?.offset
         ) {
-            const cursor = { anchor, focus, block: this, path: this.path };
-
-            this.selection.setSelection(cursor);
+            this.setCursor(anchor.offset, focus.offset);
         }
     }
 }

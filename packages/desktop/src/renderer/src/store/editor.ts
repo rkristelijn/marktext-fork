@@ -27,6 +27,7 @@ import type {
   FileNotification,
   LineEnding,
   MarkdownDocument,
+  PageOptions,
   TabOptions
 } from '@shared/types/files'
 
@@ -75,14 +76,16 @@ interface FileChangePayload {
 }
 
 interface FormatLinkClickPayload {
-  data: { href: string; [key: string]: unknown }
+  // muya's getLinkInfo yields `href: null` when the rendered link carries no
+  // usable href (e.g. an unsupported protocol stripped by sanitizeHyperlink).
+  data: { href: string | null; [key: string]: unknown }
   dirname: string
 }
 
 interface ExportPayload {
   type: string
   content?: string
-  pageOptions?: unknown
+  pageOptions?: PageOptions
 }
 
 interface AutoSavePayload {
@@ -104,10 +107,20 @@ interface ContentChangePayload {
   blocks?: unknown
 }
 
+interface AffiliationEntry {
+  type: string
+  functionType?: string
+  listType?: string
+  listItemType?: string
+  isLooseListItem?: boolean
+  [key: string]: unknown
+}
+
 interface SelectionChange {
   start: { key: string; offset: number; block?: { text?: string; functionType?: string }; type?: string }
   end: { key: string; offset: number; block?: { functionType?: string }; type?: string }
-  affiliation?: Array<{ type: string; functionType?: string; [key: string]: unknown }>
+  affiliation?: AffiliationEntry[]
+  hasFrontMatter?: boolean
 }
 
 interface SelectionFormat {
@@ -129,6 +142,9 @@ export interface EditorState {
   tabIdToIndex: Record<string, number>
   listToc: TocItem[]
   toc: TocTreeNode[]
+  // Slug of the heading the cursor is currently inside; drives the TOC sidebar
+  // highlight. Null when there are no headings or cursor is above all of them.
+  activeHeadingSlug: string | null
 }
 
 const autoSaveTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -139,7 +155,8 @@ export const useEditorStore = defineStore('editor', {
     tabs: [],
     tabIdToIndex: {},
     listToc: [], // Used for equal check and for searching for the correct github-slug to jump to
-    toc: []
+    toc: [],
+    activeHeadingSlug: null
   }),
 
   actions: {
@@ -380,7 +397,11 @@ export const useEditorStore = defineStore('editor', {
           cursor,
           renderCursor: true,
           history,
-          scrollTop
+          scrollTop,
+          // External disk reload: the engine handler records the new content as a
+          // single invertible undo boundary (replaceContent) instead of clearing
+          // history (setContent), so the first undo restores the pre-reload doc.
+          isReload: true
         })
       }
       debouncedSendBufferedState()
@@ -388,8 +409,7 @@ export const useEditorStore = defineStore('editor', {
 
     FORMAT_LINK_CLICK({ data, dirname }: FormatLinkClickPayload): void {
       // Check if the link starts with a #, that is a local anchor link.
-
-      if (data.href.length > 0 && data.href[0] === '#') {
+      if (data.href && data.href[0] === '#') {
         const anchorSlug = data.href.substring(1)
         if (!anchorSlug) return
 
@@ -402,6 +422,13 @@ export const useEditorStore = defineStore('editor', {
           }
         }
 
+        // Fall back to a non-heading target: a custom `<a id="...">` (or any
+        // element with a matching id) rendered in the document.
+        const anchorElement = document.getElementById(anchorSlug)
+        if (anchorElement) {
+          bus.emit('scroll-to-anchor-element', anchorElement)
+        }
+
         return
       }
 
@@ -409,8 +436,8 @@ export const useEditorStore = defineStore('editor', {
     },
 
     LISTEN_SCREEN_SHOT(): void {
-      window.electron.ipcRenderer.on('mt::screenshot-captured', () => {
-        bus.emit('screenshot-captured')
+      window.electron.ipcRenderer.on('mt::screenshot-captured', (_, filePath) => {
+        bus.emit('screenshot-captured', filePath)
       })
     },
 
@@ -425,13 +452,14 @@ export const useEditorStore = defineStore('editor', {
         })
         const id = getUniqueId()
         // Dynamic IPC channel — not part of the static IpcMainEventChannels contract.
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        ;(window.electron.ipcRenderer.once as any)(
-          `mt::response-of-image-path-${id}`,
-          (_: unknown, files: string[]) => {
-            rs(files)
-          }
-        )
+        ;(
+          window.electron.ipcRenderer.once as (
+            channel: string,
+            listener: (event: unknown, files: string[]) => void
+          ) => void
+        )(`mt::response-of-image-path-${id}`, (_: unknown, files: string[]) => {
+          rs(files)
+        })
         window.electron.ipcRenderer.send('mt::ask-for-image-auto-path', {
           pathname,
           src,
@@ -476,8 +504,18 @@ export const useEditorStore = defineStore('editor', {
       }
     },
 
+    // Flush any edit still queued in the engine's rAF batch into the active
+    // tab's `currentFile` before its markdown is read to persist — otherwise an
+    // edit made in the same frame as the read is silently dropped from the
+    // written file (#3803), the way tab switching already guards (#2938). Safe
+    // no-op when nothing is pending.
+    flushActiveEditor(): void {
+      bus.emit('flush-active-editor')
+    },
+
     FILE_SAVE(): void {
       if (!this.currentFile) return
+      this.flushActiveEditor()
       const projectStore = useProjectStore()
       const { id, filename, pathname, markdown } = this.currentFile
       const options = getOptionsFromState(this.currentFile)
@@ -507,6 +545,7 @@ export const useEditorStore = defineStore('editor', {
 
     FILE_SAVE_AS(): void {
       if (!this.currentFile) return
+      this.flushActiveEditor()
       const projectStore = useProjectStore()
       const { id, filename, pathname, markdown } = this.currentFile
       const options = getOptionsFromState(this.currentFile)
@@ -681,6 +720,7 @@ export const useEditorStore = defineStore('editor', {
 
     MOVE_FILE_TO(): void {
       if (!this.currentFile) return
+      this.flushActiveEditor()
       const projectStore = useProjectStore()
       const { id, filename, pathname, markdown } = this.currentFile
       const options = getOptionsFromState(this.currentFile)
@@ -723,6 +763,7 @@ export const useEditorStore = defineStore('editor', {
 
     RESPONSE_FOR_RENAME(): void {
       if (!this.currentFile) return
+      this.flushActiveEditor()
       const projectStore = useProjectStore()
       const { id, filename, pathname, markdown } = this.currentFile
       const options = getOptionsFromState(this.currentFile)
@@ -785,9 +826,17 @@ export const useEditorStore = defineStore('editor', {
       if (oldCurrentFile == null || oldCurrentFile.id !== currentFile.id) {
         const { id, markdown, cursor, history, pathname, scrollTop, blocks, muyaIndexCursor } =
           currentFile
+        // Must run while `currentFile` still points at the outgoing tab, so its
+        // flushed edit is attributed to that tab and not lost on switch (#2938).
+        if (oldCurrentFile) {
+          this.flushActiveEditor()
+        }
         window.DIRNAME = pathname ? window.path.dirname(pathname) : ''
         this.currentFile = currentFile
         didUpdateCurrentFile = true
+        // New file activated — clear the stale heading highlight; it will be
+        // re-computed on the first selection-change in the new document.
+        this.activeHeadingSlug = null
 
         if (!this.tabs.some((file) => file.id === currentFile.id)) {
           this.tabs.push(currentFile)
@@ -830,8 +879,14 @@ export const useEditorStore = defineStore('editor', {
             project: projectStore
           })
         )
-        bus.emit('cmd::register-command', new LineEndingCommand(this))
-        bus.emit('cmd::register-command', new TrailingNewlineCommand(this))
+        bus.emit(
+          'cmd::register-command',
+          new LineEndingCommand(this)
+        )
+        bus.emit(
+          'cmd::register-command',
+          new TrailingNewlineCommand(this)
+        )
 
         setTimeout(() => {
           window.electron.ipcRenderer.send('mt::request-keybindings')
@@ -1321,6 +1376,31 @@ export const useEditorStore = defineStore('editor', {
       }
     },
 
+    /**
+     * Replaces the table of contents with a fresh snapshot from the engine.
+     *
+     * Used on file load and tab switch, where the engine fires no `json-change`
+     * event (so `LISTEN_FOR_CONTENT_CHANGE` never runs and the TOC would
+     * otherwise stay empty until the first edit). Assigns unconditionally: this
+     * is a re-seed on load/switch, so there is no `equal` guard to short-circuit
+     * — the incoming snapshot always wins, even if it happens to deep-equal the
+     * current TOC.
+     * @param toc Flat list of headings returned by `muya.getTOC()`.
+     */
+    UPDATE_TOC(toc: TocItem[]): void {
+      this.listToc = toc ?? []
+      this.toc = listToTree<TocItem>(toc ?? [])
+      // A new TOC means the document changed or a new file was loaded; the old
+      // active heading slug is stale.
+      this.activeHeadingSlug = null
+    },
+
+    SET_ACTIVE_HEADING(slug: string | null): void {
+      if (this.activeHeadingSlug !== slug) {
+        this.activeHeadingSlug = slug
+      }
+    },
+
     // Content change from realtime preview editor and source code editor
     // There is a chance that this event is fired AFTER the tab is switched.
     LISTEN_FOR_CONTENT_CHANGE({
@@ -1375,7 +1455,7 @@ export const useEditorStore = defineStore('editor', {
         typeof lastEditIndex === 'number' && lastEditIndex >= 0
           ? tab.history.stack[lastEditIndex]
           : undefined
-      if (
+      const historyMarksDirty =
         (typeof lastEditIndex === 'number' &&
           lastEditIndex >= 0 &&
           editEntry !== undefined &&
@@ -1383,7 +1463,8 @@ export const useEditorStore = defineStore('editor', {
         (lastEditIndex === -1 &&
           tab.lastSavedHistoryId !== -1 &&
           tab.lastSavedHistoryId !== tab.history.lastInitIndex) // Edge Case: Undo to original content (lastEditIndex === -1) after saving means we cant use the lastEditIndex. Compare it against the lastInitIndex instead.
-      ) {
+      const isDirty = history === undefined ? markdown !== oldMarkdown : historyMarksDirty
+      if (isDirty) {
         tab.isSaved = false
         if (pathname && autoSave) {
           const options = getOptionsFromState(tab)
@@ -1395,7 +1476,7 @@ export const useEditorStore = defineStore('editor', {
             options
           })
         }
-      } else if (tab.lastSavedHistoryId !== -1) {
+      } else if (history !== undefined && tab.lastSavedHistoryId !== -1) {
         // Check here is to prevent it from overriding a restored .isSaved state
         tab.isSaved = true // An undo can trigger this
       }
@@ -1456,6 +1537,21 @@ export const useEditorStore = defineStore('editor', {
       )
     },
 
+    // Persist the caret for a tab without the heavy content-change pipeline. A
+    // pure caret move (click / arrow key) fires `selection-change` but NOT
+    // `json-change`, so `tab.cursor` — the position replayed when the tab is
+    // re-activated — would otherwise only ever track the last EDIT, losing a
+    // click-moved caret across an in-session tab switch. Lightweight by design:
+    // it only stores the serialized caret, skipping markdown/blocks/TOC re-derivation
+    // and the save/dirty bookkeeping LISTEN_FOR_CONTENT_CHANGE performs.
+    PERSIST_CURSOR(id: string, cursor: unknown): void {
+      if (!id || !cursor) return
+      const index = this.tabIdToIndex[id]
+      if (index == null) return
+      const tab = this.tabs[index]
+      if (tab) tab.cursor = cursor
+    },
+
     SELECTION_FORMATS(formats: SelectionFormat[]): void {
       const { windowId } = window.marktext?.env ?? { windowId: -1 }
       window.electron.ipcRenderer.send(
@@ -1490,8 +1586,7 @@ export const useEditorStore = defineStore('editor', {
         content: content ?? '',
         filename,
         pathname,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        pageOptions: (pageOptions ?? {}) as any
+        pageOptions: pageOptions ?? {}
       })
     },
 
@@ -1592,6 +1687,14 @@ export const useEditorStore = defineStore('editor', {
             }
             case 'add':
             case 'change': {
+              // Only the file's metadata changed on disk (e.g. a git checkout
+              // that left the content byte-identical) — there is nothing to
+              // reload and no reason to warn the user (#1861).
+              const newMarkdown = (change as unknown as FileChangePayload).data?.markdown
+              if (typeof newMarkdown === 'string' && newMarkdown === tab.markdown) {
+                break
+              }
+
               const { autoSave } = preferencesStore
               if (autoSave) {
                 if (autoSaveTimers.has(id)) {
@@ -1770,6 +1873,7 @@ interface ApplicationMenuState {
   isCodeFences: boolean
   isCodeContent: boolean
   isTable: boolean
+  hasFrontMatter: boolean
   affiliation: Record<string, boolean>
 }
 
@@ -1779,16 +1883,11 @@ interface ApplicationMenuState {
  * @param {*} selection The selection.
  * @returns A object that represents the application menu state.
  */
-// Loose shapes for the application-menu selection helpers. The legacy code
-// indexes through Muya block trees that aren't typed yet; use `any` locally to
-// keep the conversion focused on the store surface.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type LooseAffiliation = any
-
 const createApplicationMenuState = ({
   start,
   end,
-  affiliation
+  affiliation,
+  hasFrontMatter
 }: SelectionChange): ApplicationMenuState => {
   const state: ApplicationMenuState = {
     isDisabled: false,
@@ -1803,13 +1902,14 @@ const createApplicationMenuState = ({
     isCodeContent: false,
     // Whether the selection contains a table.
     isTable: false,
+    hasFrontMatter: !!hasFrontMatter,
     // Contains keys about the selection type(s) (string, boolean) like "ul: true".
     affiliation: {}
   }
   const { isMultiline } = state
-  const aff = (affiliation ?? []) as LooseAffiliation[]
-  const startBlock = (start.block ?? {}) as LooseAffiliation
-  const endBlock = (end.block ?? {}) as LooseAffiliation
+  const aff: AffiliationEntry[] = affiliation ?? []
+  const startBlock: { text?: string; functionType?: string } = start.block ?? {}
+  const endBlock: { functionType?: string } = end.block ?? {}
 
   // Get code block information from selection.
   if (
@@ -1826,18 +1926,24 @@ const createApplicationMenuState = ({
     }
   }
 
-  // Query list information.
-  if (aff.length >= 1 && /ul|ol/.test(aff[0].type)) {
-    const listBlock = aff[0]
-    state.affiliation[listBlock.type] = true
-    state.isLooseListItem = !!listBlock.children?.[0]?.isLooseListItem
-    state.isTaskList = listBlock.listType === 'task'
-  } else if (aff.length >= 3 && aff[1].type === 'li') {
-    const listItem = aff[1]
-    const listType = listItem.listItemType === 'order' ? 'ol' : 'ul'
-    state.affiliation[listType] = true
-    state.isLooseListItem = !!listItem.isLooseListItem
-    state.isTaskList = listItem.listItemType === 'task'
+  // Check every list level in the affiliation chain — nested lists show all
+  // levels (e.g. a ul wrapping an ol checks both). Scanning the full chain (not
+  // just the depth-3 loop below) keeps a deeply nested inner list checked. The
+  // loose/task flags come from the INNERMOST list (the one the cursor is in);
+  // the chain is outermost-first, so that is the last ul/ol entry.
+  const listEntries = aff.filter((b) => b.type === 'ul' || b.type === 'ol')
+  for (const entry of listEntries) {
+    // Task and bullet lists are both `type: 'ul'`; distinguish by listType so a
+    // chain with several kinds (e.g. ol > task > ul) checks each list menu item.
+    const kind = entry.type === 'ol' ? 'ol' : entry.listType === 'task' ? 'task' : 'ul'
+    state.affiliation[kind] = true
+  }
+  const innerList = listEntries[listEntries.length - 1]
+  if (innerList) {
+    // The engine's affiliation entry carries the loose flag on the list block
+    // itself (derived from `meta.loose`), not via a `children` chain.
+    state.isLooseListItem = !!innerList.isLooseListItem
+    state.isTaskList = innerList.listType === 'task'
   }
 
   // Search with block depth 3 (e.g. "ul -> li -> p" where p is the actually paragraph inside the list (item)).
@@ -1852,20 +1958,27 @@ const createApplicationMenuState = ({
       if (b.functionType === 'table') {
         state.isTable = true
         state.isDisabled = true
+        state.affiliation[b.type] = true
+      } else if (b.functionType === 'diagram') {
+        // Diagrams are atomic, non-formattable blocks: disable the whole
+        // paragraph + format menus like a code fence, but they are not tables.
+        state.isCodeFences = true
+        state.affiliation[b.functionType] = true
       }
       break
     } else if (isMultiline && /^h{1,6}$/.test(b.type)) {
       // Multiple block elements are selected.
       state.affiliation = {}
       break
-    } else {
+    } else if (b.type !== 'ul' && b.type !== 'ol') {
+      // Lists are handled above (innermost only); the depth-limited scan must
+      // not re-add an outer list type and check two list kinds at once.
       if (!state.affiliation[b.type]) {
         state.affiliation[b.type] = true
       }
     }
   }
 
-  // Clean up
   if (Object.getOwnPropertyNames(state.affiliation).length >= 2 && state.affiliation.p) {
     delete state.affiliation.p
   }
@@ -1878,10 +1991,16 @@ const createApplicationMenuState = ({
 /**
  * Creates a object that contains the formats selection state.
  */
-const createSelectionFormatState = (formats: SelectionFormat[]): Record<string, boolean> => {
+export const createSelectionFormatState = (
+  formats: SelectionFormat[]
+): Record<string, boolean> => {
   const state: Record<string, boolean> = {}
   for (const item of formats) {
-    state[item.type] = true
+    // Underline/superscript/subscript/highlight are carried as `html_tag`
+    // tokens whose `tag` (u/sup/sub/mark) is the real format key the menu
+    // map keys off — the bare `type` would only ever yield `html_tag`.
+    const key = item.type === 'html_tag' ? (item.tag as string) : item.type
+    if (key) state[key] = true
   }
   return state
 }

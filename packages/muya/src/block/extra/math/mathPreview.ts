@@ -2,14 +2,16 @@ import type { Muya } from '../../../muya';
 import type { IMathBlockState, TState } from '../../../state/types';
 import katex from 'katex';
 import { fromEvent } from 'rxjs';
+import { CLASS_NAMES } from '../../../config';
+import { escapeHTML } from '../../../utils';
 import logger from '../../../utils/logger';
 import Parent from '../../base/parent';
-import 'katex/dist/contrib/mhchem.min.js';
+import 'katex/dist/contrib/mhchem.mjs';
 
 const debug = logger('mathPreview:');
 
 class MathPreview extends Parent {
-    public math: string;
+    private _math: string;
 
     static override blockName = 'math-preview';
 
@@ -27,14 +29,14 @@ class MathPreview extends Parent {
     constructor(muya: Muya, { text }: IMathBlockState) {
         super(muya);
         this.tagName = 'div';
-        this.math = text;
+        this._math = text;
         this.classList = ['mu-math-preview'];
         this.attributes = {
             spellcheck: 'false',
             contenteditable: 'false',
         };
         this.createDomNode();
-        this.attachDOMEvents();
+        this._attachDOMEvents();
         this.update();
     }
 
@@ -43,7 +45,7 @@ class MathPreview extends Parent {
         return {} as TState;
     }
 
-    attachDOMEvents() {
+    private _attachDOMEvents() {
         const clickObservable = fromEvent(this.domNode!, 'click');
         clickObservable.subscribe(this.clickHandler.bind(this));
     }
@@ -56,9 +58,9 @@ class MathPreview extends Parent {
         cursorBlock?.setCursor(0, 0);
     }
 
-    update(math = this.math) {
-        if (this.math !== math)
-            this.math = math;
+    update(math = this._math) {
+        if (this._math !== math)
+            this._math = math;
 
         const { i18n } = this.muya;
 
@@ -69,14 +71,13 @@ class MathPreview extends Parent {
                 });
                 this.domNode!.innerHTML = html;
             }
-            catch {
-                this.domNode!.innerHTML = `<div class="mu-math-error">&lt; ${i18n.t(
-                    'Invalid Mathematical Formula',
-                )} &gt;</div>`;
+            catch (err) {
+                const message = err instanceof Error ? err.message : i18n.t('Invalid Mathematical Formula');
+                this.domNode!.innerHTML = `<div class="${CLASS_NAMES.MU_MATH_ERROR}">${escapeHTML(message)}</div>`;
             }
         }
         else {
-            this.domNode!.innerHTML = `<div class="mu-empty">&lt; ${i18n.t(
+            this.domNode!.innerHTML = `<div class="${CLASS_NAMES.MU_EMPTY}">&lt; ${i18n.t(
                 'Empty Mathematical Formula',
             )} &gt;</div>`;
         }

@@ -1,5 +1,5 @@
 import type { Muya } from '../../../muya';
-import type { ITableState } from '../../../state/types';
+import type { ITableRowState, ITableState } from '../../../state/types';
 import type { Nullable } from '../../../types';
 import type Content from '../../base/content';
 import type TableCellContent from '../../content/tableCell';
@@ -115,7 +115,7 @@ class Table extends Parent {
         return (this.firstChild as Parent & { queryBlock: (p: TBlockPath) => Parent | Content | undefined }).queryBlock(path);
     }
 
-    override empty() {
+    protected override empty() {
         if (this.isEmpty())
             return;
 
@@ -188,7 +188,7 @@ class Table extends Parent {
         if (row == null)
             return;
 
-        // Marktext 6293d408 (#572) backport: capture a surviving neighbour
+        // Capture a surviving neighbour
         // BEFORE the detach so the caller can place the caret on a cell that
         // is still attached to the DOM. Prefer the next row, fall back to the
         // previous; if no rows remain after this delete, capture a content
@@ -231,8 +231,8 @@ class Table extends Parent {
 
         // Capture the first row's surviving neighbour cell before mutation so
         // the caller can setCursor on a still-attached cell after the column
-        // detach. Same intent as marktext 6293d408 — but applied per column
-        // since the new architecture removes one cell per row in a loop.
+        // detach. Applied per column since the new architecture removes one
+        // cell per row in a loop.
         const firstRow = table.firstChild as TableRow;
         const targetCellInFirstRow = firstRow.find(offset) as TableBodyCell | null;
         const neighbourCell
@@ -269,6 +269,54 @@ class Table extends Parent {
                 this.jsonState.editOperation(path, diffToTextOp(diffs));
             }
         });
+    }
+
+    /**
+     * Resolve a body cell by its (row, column) offsets, both zero-based. Returns
+     * `null` when either index is out of range. Used by the cross-cell selection
+     * controller to walk the rectangle between an anchor and focus cell.
+     */
+    cellAt(row: number, column: number): Nullable<TableBodyCell> {
+        const rowBlock = (this.firstChild as TableInner).find(row) as TableRow | undefined;
+        if (rowBlock == null)
+            return null;
+
+        return (rowBlock.find(column) as TableBodyCell | undefined) ?? null;
+    }
+
+    /**
+     * Build an `ITableState` for the rectangular block of cells bounded by
+     * (`startRow`, `startColumn`) and (`endRow`, `endColumn`) inclusive. The
+     * bounds may be passed in any order — they are normalised — and are clamped
+     * to the table's dimensions, so a copied cell rectangle round-trips to GFM
+     * table markdown via `StateToMarkdown`. The first selected row becomes the
+     * header
+     * row of the resulting sub-table, preserving each cell's alignment.
+     */
+    getSubTableState(
+        startRow: number,
+        startColumn: number,
+        endRow: number,
+        endColumn: number,
+    ): ITableState {
+        const { rowCount, columnCount } = this;
+        const minRow = Math.max(0, Math.min(startRow, endRow));
+        const maxRow = Math.min(rowCount - 1, Math.max(startRow, endRow));
+        const minColumn = Math.max(0, Math.min(startColumn, endColumn));
+        const maxColumn = Math.min(columnCount - 1, Math.max(startColumn, endColumn));
+
+        const children: ITableState['children'] = [];
+        for (let r = minRow; r <= maxRow; r++) {
+            const cells: ITableRowState['children'] = [];
+            for (let c = minColumn; c <= maxColumn; c++) {
+                const cell = this.cellAt(r, c);
+                if (cell)
+                    cells.push(cell.getState());
+            }
+            children.push({ name: 'table.row', children: cells });
+        }
+
+        return { name: 'table', children };
     }
 
     override getState(): ITableState {

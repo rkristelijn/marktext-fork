@@ -1,5 +1,9 @@
 import type { ILexOption } from './types';
 import { Marked } from 'marked';
+import { EXPORT_DOMPURIFY_CONFIG } from '../../config';
+import { sanitize } from '../index';
+import cjkEmStrongExtension from './extensions/cjkEmStrong';
+import footnoteExtension from './extensions/footnote';
 import mathExtension from './extensions/math';
 import superSubScriptExtension from './extensions/superSubscript';
 import fm, { frontMatterRender } from './frontMatter';
@@ -8,7 +12,7 @@ import walkTokens from './walkTokens';
 
 export function getClipBoardHtml(src: string, options: ILexOption = {}) {
     options = Object.assign({}, DEFAULT_OPTIONS, options);
-    const { frontMatter, math, isGitlabCompatibilityEnabled, superSubScript }
+    const { footnote, frontMatter, math, isGitlabCompatibilityEnabled, superSubScript }
         = options;
     let html = '';
 
@@ -22,6 +26,10 @@ export function getClipBoardHtml(src: string, options: ILexOption = {}) {
         walkTokens: walkTokens({ math, isGitlabCompatibilityEnabled }),
     });
 
+    // CJK-as-punctuation emphasis flanking (marktext/marktext#4307); keeps the
+    // clipboard HTML consistent with the static / export render path.
+    marked.use(cjkEmStrongExtension());
+
     if (math) {
         marked.use(
             mathExtension({
@@ -34,6 +42,9 @@ export function getClipBoardHtml(src: string, options: ILexOption = {}) {
     if (superSubScript)
         marked.use(superSubScriptExtension());
 
+    if (footnote)
+        marked.use(footnoteExtension());
+
     if (frontMatter) {
         const { token, src: newSrc } = fm(src);
         if (token) {
@@ -45,4 +56,10 @@ export function getClipBoardHtml(src: string, options: ILexOption = {}) {
     html += marked.parse(src);
 
     return html;
+}
+
+export function getSanitizeClipboardHtml(src: string, options: ILexOption = {}) {
+    const html = getClipBoardHtml(src, options);
+
+    return sanitize(html, EXPORT_DOMPURIFY_CONFIG, false) as string;
 }

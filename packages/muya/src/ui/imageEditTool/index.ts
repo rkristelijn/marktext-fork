@@ -2,14 +2,16 @@ import type { VNode } from 'snabbdom';
 import type Format from '../../block/base/format';
 import type { Muya } from '../../index';
 import type { ImageToken } from '../../inlineRenderer/types';
+import type { IImagePathSuggestion } from '../imagePicker';
 import type { IBaseOptions } from '../types';
 import { EVENT_KEYS, isWin, URL_REG } from '../../config';
 import { getUniqueId, isHTMLInputElement, isKeyboardEvent } from '../../utils';
-import { query } from '../../utils/dom';
 
+import { query } from '../../utils/dom';
 import { getImageInfo, getImageSrc } from '../../utils/image';
 import { h, patch } from '../../utils/snabbdom';
 import BaseFloat from '../baseFloat';
+import { ImagePathPicker } from '../imagePicker';
 import './index.css';
 
 /**
@@ -28,8 +30,15 @@ interface IState {
  * Image edit tool options
  */
 type Options = {
-    /** Custom image path picker function */
+    /** Custom image path picker function (one-shot native file dialog) */
     imagePathPicker?: () => Promise<string>;
+    /**
+     * Local image path autocomplete hook. Given the current src input value,
+     * returns a list of path suggestions to show in the floating
+     * {@link ImagePathPicker}, typically backed by a filesystem directory
+     * listing.
+     */
+    imagePathAutoComplete?: (src: string) => Promise<IImagePathSuggestion[]>;
     /** Image upload action handler */
     imageAction?: (state: IState) => Promise<string>;
 } & IBaseOptions;
@@ -57,6 +66,7 @@ const FILE_PROTOCOL_LENGTH = 7;
 export class ImageEditTool extends BaseFloat {
     public override options: Options;
     static pluginName = 'imageSelector';
+    public override capturesContentKeydown = true;
 
     /** Previous virtual node for patching */
     private _oldVNode: VNode | null = null;
@@ -70,12 +80,21 @@ export class ImageEditTool extends BaseFloat {
     /** The block containing the image */
     private _block: Format | null = null;
 
+    /** Monotonic counter used to drop out-of-order imagePathAutoComplete responses */
+    private _autoCompleteSeq = 0;
+
     /** Current editing state */
     private _state: IState = {
         alt: '',
         src: '',
         title: '',
     };
+
+    /** Active tab: file picker ("select") or link/path input ("link") */
+    private _tab: 'select' | 'link' = 'link';
+
+    /** Whether the link tab shows the alt and title inputs as well as src */
+    private _isFullMode = false;
 
     /** Container element for the image selector */
     private _imageSelectorContainer: HTMLDivElement
@@ -145,32 +164,180 @@ export class ImageEditTool extends BaseFloat {
     private _focusSrcInput() {
         const input = this.container ? query<HTMLInputElement>('input.src', this.container) : null;
         if (input) {
+            // Force the value — when reopening the tool snabbdom may skip the
+            // value prop (the user dirtied the DOM input between renders).
+            input.value = this._state.src;
             input.focus();
             input.select();
         }
     }
 
     /**
-     * Handle input change for image source
+     * Handle input change for an editable image field (src / alt / title).
      * @param event - Input event
+     * @param type - Which image field the input edits
      */
-    private _handleSrcInput(event: Event) {
+    private _inputHandler(event: Event, type: keyof IState) {
         if (!isHTMLInputElement(event.target))
             return;
-        this._state.src = event.target.value;
+        this._state[type] = event.target.value;
     }
 
     /**
-     * Handle Enter key press to confirm changes
+     * Switch the active tab and re-render.
+     * @param tab - Tab to activate
+     */
+    private _tabClick(tab: 'select' | 'link') {
+        this._tab = tab;
+        this._render();
+    }
+
+    /**
+     * Toggle between simple (src only) and full (alt + src + title) mode.
+     */
+    private _toggleMode() {
+        this._isFullMode = !this._isFullMode;
+        this._render();
+    }
+
+    /**
+     * Handle keydown on the alt / title inputs — Enter confirms the change.
      * @param event - Keyboard event
      */
-    private _handleEnter(event: Event) {
+    private _handleKeyDown(event: Event) {
+        if (!isKeyboardEvent(event))
+            return;
+        if (event.key === EVENT_KEYS.Enter) {
+            event.stopPropagation();
+            this._handleConfirm();
+        }
+    }
+
+    /**
+     * Locate the floating image-path picker if it is currently open.
+     * Plugins are registered privately on Muya, so we resolve the instance via
+     * the shared `ui.shownFloat` registry (the same pattern tableColumnToolbar
+     * uses to find the format picker). Returns null when the picker plugin is
+     * not registered or not currently shown.
+     */
+    private _getOpenImagePathPicker(): ImagePathPicker | null {
+        for (const tool of this.muya.ui.shownFloat) {
+            if (tool instanceof ImagePathPicker && tool.status)
+                return tool;
+        }
+        return null;
+    }
+
+    /**
+     * Handle keydown on the src input.
+     * When the autocomplete picker is open, arrow keys / Tab / Enter drive the
+     * picker (navigate + choose) instead of confirming. Otherwise Enter
+     * confirms the change.
+     * @param event - Keyboard event
+     */
+    private _handleSrcKeyDown(event: Event) {
         if (!isKeyboardEvent(event))
             return;
 
-        event.stopPropagation();
-        if (event.key === EVENT_KEYS.Enter)
-            this._handleConfirm();
+        const picker = this._getOpenImagePathPicker();
+        if (!picker) {
+            if (event.key === EVENT_KEYS.Enter) {
+                event.stopPropagation();
+                this._handleConfirm();
+            }
+            return;
+        }
+
+        switch (event.key) {
+            case EVENT_KEYS.ArrowUp:
+                event.preventDefault();
+                // Stop the editor's BaseScrollFloat keydown handler (bound on
+                // muya.domNode) from also stepping the picker — otherwise the
+                // active item advances twice per keypress.
+                event.stopPropagation();
+                picker.step('previous');
+                break;
+
+            case EVENT_KEYS.ArrowDown:
+            case EVENT_KEYS.Tab:
+                event.preventDefault();
+                event.stopPropagation();
+                picker.step('next');
+                break;
+
+            case EVENT_KEYS.Enter:
+                event.preventDefault();
+                event.stopPropagation();
+                if (picker.activeItem)
+                    picker.selectItem(picker.activeItem);
+                break;
+
+            default:
+                break;
+        }
+    }
+
+    /**
+     * Handle keyup on the src input.
+     * Re-queries the `imagePathAutoComplete` hook (debounced via the browser's
+     * natural keystroke cadence) and dispatches `muya-image-picker` so the
+     * floating picker refreshes its suggestions. Navigation keys are ignored so
+     * they don't re-trigger a fetch while the user is moving through the list.
+     * @param event - Keyboard event
+     */
+    private async _handleSrcKeyUp(event: Event) {
+        if (!isKeyboardEvent(event) || !this.options.imagePathAutoComplete)
+            return;
+
+        const { key } = event;
+        if (
+            key === EVENT_KEYS.ArrowUp
+            || key === EVENT_KEYS.ArrowDown
+            || key === EVENT_KEYS.Tab
+            || (key === EVENT_KEYS.Enter
+                && !this._state.src.endsWith('/')
+                && !this._state.src.endsWith('\\'))
+        ) {
+            return;
+        }
+
+        const { eventCenter } = this.muya;
+        const value = this._state.src;
+        const reference = this.container
+            ? query<HTMLInputElement>('input.src', this.container)
+            : null;
+
+        // Write the chosen suggestion back into the src input. The new value is
+        // the directory portion of the current path plus the chosen basename.
+        const cb = (item: IImagePathSuggestion) => {
+            if (!reference)
+                return;
+
+            const { text } = item;
+            // Derive the directory prefix from the CURRENT input value — the
+            // user may have kept typing after the suggestions were fetched, so
+            // the value captured on keyup can be stale.
+            const current = reference.value;
+            let basePath = '';
+            const pathSep = current.match(/(?:\/|\\)[^/\\]*$/);
+            if (pathSep && pathSep[0])
+                basePath = current.substring(0, pathSep.index! + 1);
+
+            const newValue = basePath + text;
+            const len = newValue.length;
+            reference.value = newValue;
+            this._state.src = newValue;
+            reference.focus();
+            reference.setSelectionRange(len, len);
+        };
+
+        // Guard against out-of-order resolution: if the user types again before
+        // a slower earlier request resolves, drop the stale response.
+        const seq = ++this._autoCompleteSeq;
+        const list = value ? await this.options.imagePathAutoComplete(value) : [];
+        if (seq !== this._autoCompleteSeq)
+            return;
+        eventCenter.emit('muya-image-picker', { reference, list, cb });
     }
 
     /**
@@ -263,67 +430,141 @@ export class ImageEditTool extends BaseFloat {
     }
 
     /**
-     * Handle click on "more" button to open file picker
-     * Updates the src input with selected path
+     * Hide the tool and dismiss the autocomplete picker alongside it so a
+     * confirm/close never leaves a dangling suggestions dropdown.
      */
-    private async _handleMoreClick() {
-        if (!this.options.imagePathPicker)
-            return;
-
-        const path = await this.options.imagePathPicker();
-        this._state.src = path;
-        this._render();
+    override hide() {
+        const picker = this._getOpenImagePathPicker();
+        if (picker)
+            picker.hide();
+        super.hide();
     }
 
     /**
-     * Render the image edit tool UI
-     * Creates virtual DOM with file picker button (optional), src input and confirm button
+     * Handle click on the "Choose Image" button in the select tab.
+     * Opens the one-shot native file picker and applies the chosen path
+     * directly (matching the legacy ImageSelector select-tab behavior).
      */
-    private _render() {
-        const { _oldVNode: oldVNode, _imageSelectorContainer: imageSelectorContainer, _state: { src } } = this;
+    private async _handleSelectButtonClick() {
+        if (!this.options.imagePathPicker) {
+            console.warn('You need to add a imagePathPicker option');
+            return;
+        }
+
+        const path = await this.options.imagePathPicker();
+        const { alt, title } = this._state;
+        return this._replaceImageAsync({ alt, title, src: path });
+    }
+
+    /**
+     * Render the tab header (Select / Embed link).
+     */
+    private _renderHeader(): VNode {
         const { i18n } = this.muya;
+        const tabs: { label: string; value: 'select' | 'link' }[] = [
+            { label: i18n.t('Select'), value: 'select' },
+            { label: i18n.t('Embed link'), value: 'link' },
+        ];
 
-        // Optional file picker button
-        const moreButton = this.options.imagePathPicker
-            ? h(
-                    'span.more',
-                    {
-                        on: {
-                            click: () => this._handleMoreClick(),
-                        },
-                    },
-                    h('span.more-inner'),
-                )
-            : null;
+        const children = tabs.map((tab) => {
+            const selector = this._tab === tab.value ? 'li.active' : 'li';
+            return h(selector, [
+                h(
+                    'span',
+                    { on: { click: () => this._tabClick(tab.value) } },
+                    tab.label,
+                ),
+            ]);
+        });
 
-        // Image source input
-        const srcInput = h('input.src', {
-            props: {
-                placeholder: i18n.t('Image src placeholder'),
-                value: src,
-            },
+        return h('ul.header', children);
+    }
+
+    /**
+     * Render the "Select" tab body: a Choose Image button and a tip.
+     */
+    private _renderSelectBody(): VNode[] {
+        const { i18n } = this.muya;
+        return [
+            h(
+                'button.role-button.select',
+                { on: { click: () => this._handleSelectButtonClick() } },
+                i18n.t('Choose Image'),
+            ),
+            h('span.description', i18n.t('Choose image from your computer.')),
+        ];
+    }
+
+    /**
+     * Render the "Embed link" tab body: the input container (src, plus alt and
+     * title in full mode), the Embed button and the simple/full mode hint.
+     */
+    private _renderLinkBody(): VNode[] {
+        const { i18n } = this.muya;
+        const { alt, src, title } = this._state;
+
+        const altInput = h('input.alt', {
+            props: { placeholder: i18n.t('Alt text'), value: alt },
             on: {
-                input: event => this._handleSrcInput(event),
-                paste: event => this._handleSrcInput(event),
-                keydown: event => this._handleEnter(event),
+                input: (event: Event) => this._inputHandler(event, 'alt'),
+                paste: (event: Event) => this._inputHandler(event, 'alt'),
+                keydown: (event: Event) => this._handleKeyDown(event),
+            },
+        });
+        const srcInput = h('input.src', {
+            props: { placeholder: i18n.t('Image link or local path'), value: src },
+            on: {
+                input: (event: Event) => this._inputHandler(event, 'src'),
+                paste: (event: Event) => this._inputHandler(event, 'src'),
+                keydown: (event: Event) => this._handleSrcKeyDown(event),
+                keyup: (event: Event) => this._handleSrcKeyUp(event),
+            },
+        });
+        const titleInput = h('input.title', {
+            props: { placeholder: i18n.t('Image title'), value: title },
+            on: {
+                input: (event: Event) => this._inputHandler(event, 'title'),
+                paste: (event: Event) => this._inputHandler(event, 'title'),
+                keydown: (event: Event) => this._handleKeyDown(event),
             },
         });
 
-        // Confirm button
-        const confirmButton = h(
-            'span.confirm',
-            {
-                on: {
-                    click: () => this._handleConfirm(),
-                },
-            },
-            i18n.t('Confirm Text'),
+        const inputWrapper = this._isFullMode
+            ? h('div.input-container', [altInput, srcInput, titleInput])
+            : h('div.input-container', [srcInput]);
+
+        const embedButton = h(
+            'button.role-button.link',
+            { on: { click: () => this._handleConfirm() } },
+            i18n.t('Embed Image'),
         );
 
-        const vnode = h('div.image-edit-tool', [
-            moreButton,
-            srcInput,
-            confirmButton,
+        const bottomDes = h('span.description', [
+            h('span', `${i18n.t('Paste web image or local image path. Use')} `),
+            h(
+                'a',
+                { on: { click: () => this._toggleMode() } },
+                `${this._isFullMode ? i18n.t('simple mode') : i18n.t('full mode')}.`,
+            ),
+        ]);
+
+        return [inputWrapper, embedButton, bottomDes];
+    }
+
+    /**
+     * Render the image edit tool UI as a tabbed selector matching the legacy
+     * ImageSelector: a header (Select / Embed link) and the active tab body.
+     */
+    private _render() {
+        const { _oldVNode: oldVNode, _imageSelectorContainer: imageSelectorContainer } = this;
+
+        const body = this._tab === 'select'
+            ? this._renderSelectBody()
+            : this._renderLinkBody();
+
+        const vnode = h('div', [
+            this._renderHeader(),
+            h('div.image-select-body', body),
         ]);
 
         patch(oldVNode || imageSelectorContainer, vnode);

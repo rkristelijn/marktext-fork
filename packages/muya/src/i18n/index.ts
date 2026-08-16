@@ -5,27 +5,28 @@ import { en } from '../locales/en';
 
 class I18n {
     public lang: string;
-    public resources: Record<string, ILocale['resource']>;
+    private _resources: Record<string, ILocale['resource']>;
 
-    constructor(public muya: Muya, object: ILocale) {
+    constructor(_muya: Muya, object: ILocale) {
         const { name, resource } = object || en;
         this.lang = name;
-        this.resources = {
+        this._resources = {
             [name]: resource,
         };
     }
 
     t(key: string): string {
-        const { lang, resources } = this;
+        const { lang } = this;
+        const resources = this._resources;
 
-        return resources?.[lang]?.[key] || resources.en[key] || key;
+        return resources?.[lang]?.[key] || resources?.en?.[key] || key;
     }
 
     locale(object: ILocale) {
         const { name, resource } = object;
         this.lang = name;
-        this.resources = {
-            ...this.resources,
+        this._resources = {
+            ...this._resources,
             [name]: resource,
         };
     }

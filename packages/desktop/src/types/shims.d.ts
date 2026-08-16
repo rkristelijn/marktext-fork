@@ -22,7 +22,8 @@ declare module 'command-exists'
 declare module 'pako'
 declare module 'snabbdom-to-html'
 declare module 'prismjs/themes/*'
-declare module 'codemirror'
+// `codemirror` (the bare module) is typed by `@types/codemirror`; only the
+// submodules below ship no declarations and are shimmed as `any`.
 declare module 'codemirror/keymap/*'
 declare module 'codemirror/lib/*'
 declare module 'codemirror/mode/*'
@@ -34,6 +35,18 @@ declare module 'minimatch' {
   export function minimatch(target: string, pattern: string, options?: unknown): boolean
 }
 
+declare module '@marktext/file-icons' {
+  interface FileIcon {
+    getClass(colourMode?: number, asObject?: boolean): string
+  }
+  interface FileIcons {
+    matchName(name: string): FileIcon | null
+    matchLanguage(lang: string): FileIcon | null
+  }
+  const fileIcons: FileIcons
+  export default fileIcons
+}
+
 // Electron augments `process` with `resourcesPath` (and a few other fields)
 // at runtime. Surface them so common/* code can read them without casts.
 declare namespace NodeJS {
@@ -43,7 +56,7 @@ declare namespace NodeJS {
   interface Global {
     __static: string
     MARKTEXT_DEBUG: boolean
-    MARKTEXT_DEBUG_VERBOSE: boolean
+    MARKTEXT_DEBUG_VERBOSE: number
     MARKTEXT_SAFE_MODE: boolean
   }
 }
@@ -55,6 +68,6 @@ declare var __static: string
 // eslint-disable-next-line no-var
 declare var MARKTEXT_DEBUG: boolean
 // eslint-disable-next-line no-var
-declare var MARKTEXT_DEBUG_VERBOSE: boolean
+declare var MARKTEXT_DEBUG_VERBOSE: number
 // eslint-disable-next-line no-var
 declare var MARKTEXT_SAFE_MODE: boolean

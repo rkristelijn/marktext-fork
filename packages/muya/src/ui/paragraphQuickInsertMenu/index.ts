@@ -4,6 +4,7 @@ import type {
     IQuickInsertMenuItem,
 } from './config';
 import Fuse from 'fuse.js';
+import { replaceBlockByLabel } from '../../block/blockTransforms';
 import ParagraphContent from '../../block/content/paragraphContent';
 import { deepClone } from '../../utils';
 import { query } from '../../utils/dom';
@@ -12,7 +13,6 @@ import BaseScrollFloat from '../baseScrollFloat';
 import {
     getLabelFromEvent,
     MENU_CONFIG,
-    replaceBlockByLabel,
 } from './config';
 
 import './index.css';
@@ -31,9 +31,10 @@ function checkCanInsertFrontMatter(muya: Muya, block: ParagraphContent) {
 
 export class ParagraphQuickInsertMenu extends BaseScrollFloat {
     static pluginName = 'quickInsert';
+    public override capturesContentKeydown = true;
 
     public oldVNode: VNode | null = null;
-    public block: ParagraphContent | null = null;
+    private _block: ParagraphContent | null = null;
     public override activeItem: IQuickInsertMenuItem['children'][number] | null = null;
     public override renderArray: IQuickInsertMenuItem['children'] = [];
     private _renderData: IQuickInsertMenuItem[] = [];
@@ -81,9 +82,9 @@ export class ParagraphQuickInsertMenu extends BaseScrollFloat {
                 domNode!.removeAttribute('placeholder');
 
             if (needToShowQuickInsert) {
-                this.block = block;
+                this._block = block;
                 this.show(domNode);
-                this.search(text.substring(1)); // remove `/` char
+                this._search(text.substring(1)); // remove `/` char
             }
             else {
                 this.hide();
@@ -91,8 +92,9 @@ export class ParagraphQuickInsertMenu extends BaseScrollFloat {
         });
 
         const handleKeydown = (event: Event) => {
-            const { anchorBlock, isSelectionInSameBlock }
-                = editor.selection.getSelection() ?? {};
+            const selectionResult = editor.selection.getSelection();
+            const anchorBlock = selectionResult?.anchor.block;
+            const isSelectionInSameBlock = selectionResult?.isSelectionInSameBlock;
             if (isSelectionInSameBlock && anchorBlock instanceof ParagraphContent) {
                 if (anchorBlock.text)
                     return;
@@ -182,8 +184,8 @@ export class ParagraphQuickInsertMenu extends BaseScrollFloat {
         this.oldVNode = vnode;
     }
 
-    search(text: string) {
-        const { muya, block } = this;
+    private _search(text: string) {
+        const { muya, _block: block } = this;
         const { i18n } = muya;
         const canInsertFrontMatter = checkCanInsertFrontMatter(muya, block!);
         const menuConfig = deepClone(MENU_CONFIG);
@@ -228,7 +230,7 @@ export class ParagraphQuickInsertMenu extends BaseScrollFloat {
     }
 
     override selectItem({ label }: IQuickInsertMenuItem['children'][number]) {
-        const { block, muya } = this;
+        const { _block: block, muya } = this;
         replaceBlockByLabel({
             label,
             block: block!.parent!,

@@ -1,5 +1,5 @@
 import type { Muya } from '../../../muya';
-import type { ICursor } from '../../../selection/types';
+import type { IRenderCursor } from '../../../selection/types';
 import { isKeyboardEvent } from '../../../utils';
 import Format from '../../base/format';
 import { ScrollPage } from '../../scrollPage';
@@ -23,7 +23,7 @@ class ThematicBreakContent extends Format {
         return this.parent;
     }
 
-    override update(cursor: ICursor, highlights = []) {
+    override update(cursor?: IRenderCursor, highlights = []) {
         return this.inlineRenderer.patch(this, cursor, highlights);
     }
 
@@ -35,6 +35,8 @@ class ThematicBreakContent extends Format {
         const { text, muya } = this;
         const { start, end } = this.getCursor()!;
         if (start.offset === end.offset && start.offset === 0) {
+            event.preventDefault();
+            event.stopPropagation();
             const newState = {
                 name: 'paragraph',
                 text: '',
@@ -56,6 +58,7 @@ class ThematicBreakContent extends Format {
     override backspaceHandler(event: Event) {
         const { start, end } = this.getCursor()!;
         if (start.offset === 0 && end.offset === 0) {
+            event.preventDefault();
             // Remove the text content and convert it to paragraph
             this.text = '';
             this.convertToParagraph();

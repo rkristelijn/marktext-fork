@@ -1,5 +1,11 @@
-import Slugger from 'muya/lib/parser/marked/slugger'
-import { escapeHTML, unescapeHTML } from 'muya/lib/utils'
+// `escapeHTML`/`unescapeHTML` are migrated to @muyajs/core (identical impl).
+// The TOC anchors produced here (`#${slug}`) must match the heading `id`
+// attributes in the exported document. Now that editor.vue exports via
+// @muyajs/core (#4406) and the engine injects github-compatible heading ids
+// (#4412), this module derives its slugs from the SAME `generateGithubSlug`
+// algorithm, with the SAME `-N` document-order dedup the engine uses, so the
+// in-document TOC links resolve.
+import { escapeHTML, unescapeHTML, generateGithubSlug } from '@muyajs/core'
 import academicTheme from '@/assets/themes/export/academic.theme.css?inline'
 import liberTheme from '@/assets/themes/export/liber.theme.css?inline'
 import { deepClone } from '../util'
@@ -42,21 +48,10 @@ export const getCssForOptions = async(options: PdfCssOptions): Promise<string> =
   if (isPrintable) {
     output += `@media print{@page{
       margin: ${pageMarginTop}mm ${pageMarginRight}mm ${pageMarginBottom}mm ${pageMarginLeft}mm;}`
+    // Keep a heading with the content that follows it, so a page never breaks
+    // immediately after a heading, and never split a multi-line heading (#3039).
+    output += 'h1,h2,h3,h4,h5,h6{break-after:avoid;break-inside:avoid;}'
   }
-
-  // Font options
-  output += '.markdown-body{'
-  if (fontFamily) {
-    output += `font-family:"${fontFamily}",${FALLBACK_FONT_FAMILIES};`
-    output = `.hf-container{font-family:"${fontFamily}",${FALLBACK_FONT_FAMILIES};}${output}`
-  }
-  if (fontSize) {
-    output += `font-size:${fontSize}px;`
-  }
-  if (lineHeight) {
-    output += `line-height:${lineHeight};`
-  }
-  output += '}'
 
   // Auto numbering headings via CSS
   if (autoNumberingHeadings) {
@@ -75,8 +70,7 @@ export const getCssForOptions = async(options: PdfCssOptions): Promise<string> =
       output += liberTheme
     } else {
       // Read theme from disk
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const { userDataPath } = (window as any).marktext.paths as { userDataPath: string }
+      const { userDataPath } = window.marktext!.paths as { userDataPath: string }
       const themePath = window.path.join(userDataPath, 'themes/export', theme)
       if (await window.fileUtils.isFile(themePath)) {
         try {
@@ -90,6 +84,23 @@ export const getCssForOptions = async(options: PdfCssOptions): Promise<string> =
       }
     }
   }
+
+  // Font options. Emitted AFTER the theme CSS so the "Overwrite theme font"
+  // settings win the cascade: a selected export theme also sets `.markdown-body`
+  // font-size/line-height/font-family, and at equal specificity the later rule
+  // wins — so the user's override must come last to actually override the theme.
+  output += '.markdown-body{'
+  if (fontFamily) {
+    output += `font-family:"${fontFamily}",${FALLBACK_FONT_FAMILIES};`
+    output = `.hf-container{font-family:"${fontFamily}",${FALLBACK_FONT_FAMILIES};}${output}`
+  }
+  if (fontSize) {
+    output += `font-size:${fontSize}px;`
+  }
+  if (lineHeight) {
+    output += `line-height:${lineHeight};`
+  }
+  output += '}'
 
   if (headerFooterFontSize) {
     output += `.page-header .hf-container,
@@ -119,10 +130,29 @@ export interface HtmlTocOptions {
   [key: string]: unknown
 }
 
+// Replicate @muyajs/core's `MarkdownToHtml#_injectHeadingIds` slugging so the
+// TOC `href="#slug"` anchors target the exact ids the engine writes onto the
+// exported `<h1>..<h6>`: github-compatible base slug (falling back to
+// `heading` when the text slugs to empty), deduplicated in document order with
+// an incrementing `-N` suffix. Computed over the FULL heading list in order
+// (before the render-time filtering below) to keep the dedup sequence aligned
+// with the engine's whole-document pass.
+const assignHeadingSlugs = (tocList: TocEntry[]): void => {
+  const seen = new Set<string>()
+  for (const entry of tocList) {
+    const base = generateGithubSlug(entry.content) || 'heading'
+    let slug = base
+    let n = 1
+    while (seen.has(slug)) {
+      slug = `${base}-${n++}`
+    }
+    seen.add(slug)
+    entry.slug = slug
+  }
+}
+
 const generateHtmlToc = (
   tocList: TocEntry[],
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  slugger: any,
   currentLevel: number,
   options: HtmlTocOptions
 ): string => {
@@ -133,30 +163,29 @@ const generateHtmlToc = (
   const topLevel = tocList[0].lvl
   if (!options.tocIncludeTopHeading && topLevel <= 1) {
     tocList.shift()
-    return generateHtmlToc(tocList, slugger, currentLevel, options)
+    return generateHtmlToc(tocList, currentLevel, options)
   } else if (topLevel <= currentLevel) {
     return ''
   }
 
   const shifted = tocList.shift() as TocEntry
-  const { content, lvl } = shifted
-  const slug = slugger.slug(content)
+  const { content, lvl, slug } = shifted
 
   let html = `<li><span><a class="toc-h${lvl}" href="#${slug}">${content}</a><span class="dots"></span></span>`
 
   // Generate sub-items
   if (tocList.length !== 0 && tocList[0].lvl > lvl) {
-    html += '<ul>' + generateHtmlToc(tocList, slugger, lvl, options) + '</ul>'
+    html += '<ul>' + generateHtmlToc(tocList, lvl, options) + '</ul>'
   }
 
-  html += '</li>' + generateHtmlToc(tocList, slugger, currentLevel, options)
+  html += '</li>' + generateHtmlToc(tocList, currentLevel, options)
   return html
 }
 
 export const getHtmlToc = (toc: TocEntry[], options: HtmlTocOptions = {}): string => {
   const list = deepClone(toc)
-  const slugger = new Slugger()
-  const tocList = generateHtmlToc(list, slugger, 0, options)
+  assignHeadingSlugs(list)
+  const tocList = generateHtmlToc(list, 0, options)
   if (!tocList) {
     return ''
   }
