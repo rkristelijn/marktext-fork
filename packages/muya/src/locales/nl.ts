@@ -15,7 +15,7 @@ export const nl = {
         // quickInsert
         'Paragraph': 'Alinea',
         'Horizontal Line': 'Horizontale lijn',
-        'Front Matter': 'Voorwerk',
+        'Front Matter': 'Front Matter',
         'Header 1': 'Kop 1',
         'Header 2': 'Kop 2',
         'Header 3': 'Kop 3',
@@ -81,7 +81,7 @@ export const nl = {
         'Invalid Diagram Code': 'Ongeldige diagramcode',
         'Empty Diagram': 'Leeg diagram',
         'Input Mathematical Formula...': 'Voer wiskundeformule in...',
-        'Input Front Matter...': 'Voer voorwerk in...',
+        'Input Front Matter...': 'Voer Front Matter in...',
         'Invalid Mathematical Formula': 'Ongeldige wiskundeformule',
         'Empty Mathematical Formula': 'Lege wiskundeformule',
     },
