@@ -1,0 +1,27 @@
+# CodeRabbit Configuration
+# https://docs.coderabbit.ai/guide/configuration
+language: en
+reviews:
+  profile: chill
+  high_level_summary: true
+  poem: false
+  review_status: true
+  auto_review:
+    enabled: true
+    drafts: false
+  path_instructions:
+    - path: "packages/desktop/static/locales/**"
+      instructions: |
+        These are i18n locale files. Check for:
+        - Missing placeholder variables ({name}, {count}, etc.) compared to en.json
+        - Technical terms that should NOT be translated: Front Matter, Mermaid, PlantUML, Vega, KaTeX, MathJax
+        - Empty string values
+        - Keys that exist in en.json but are missing here
+    - path: "packages/muya/src/locales/**"
+      instructions: |
+        Muya editor locale files. Values for keys like 'Front Matter', 'Mermaid', 'Plantuml'
+        must stay in English (they are product names). Check key parity with en.ts.
+    - path: "scripts/**"
+      instructions: "Build/setup scripts. Must work cross-platform (Linux, macOS, Windows)."
+chat:
+  auto_reply: true
