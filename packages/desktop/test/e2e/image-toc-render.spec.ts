@@ -6,18 +6,18 @@ test.describe('Image rendering', () => {
   let app: ElectronApplication | null = null
   let page: Page
 
-  test.beforeAll(async () => {
+  test.beforeAll(async() => {
     const launched = await launchWithDoc('test/e2e/data/link-image.md')
     app = launched.app
     page = launched.page
     await page.waitForTimeout(800)
   })
 
-  test.afterAll(async () => {
+  test.afterAll(async() => {
     if (app) await app.close()
   })
 
-  test('renders image element in editor', async () => {
+  test('renders image element in editor', async() => {
     const img = page.locator('.editor-component img')
     await expect(img.first()).toBeVisible({ timeout: 10000 })
   })
@@ -27,18 +27,18 @@ test.describe('TOC sidebar', () => {
   let app: ElectronApplication | null = null
   let page: Page
 
-  test.beforeAll(async () => {
+  test.beforeAll(async() => {
     const launched = await launchWithDoc('test/e2e/data/headings.md')
     app = launched.app
     page = launched.page
     await page.waitForTimeout(800)
   })
 
-  test.afterAll(async () => {
+  test.afterAll(async() => {
     if (app) await app.close()
   })
 
-  test('TOC sidebar shows heading entries', async () => {
+  test('TOC sidebar shows heading entries', async() => {
     // Click the TOC icon in the sidebar to open TOC view
     const tocIcon = page.locator('[title*="Table"], [title*="TOC"], .side-bar-toc').first()
     if (await tocIcon.isVisible()) {
