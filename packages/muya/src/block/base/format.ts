@@ -234,8 +234,14 @@ class Format extends Content {
         text: string,
         offset: number,
         type: Token['type'],
+        // Optional pre-tokenized result for `text` under the SAME options
+        // (`hasBeginRules: false`, `this.muya.options`, no labels). The input
+        // hot path tokenizes the post-edit text once and threads it through the
+        // math/code/emoji cursor checks instead of parsing it once per check
+        // (see docs/dev/performance.md — per-keystroke redundant tokenization).
+        precomputedTokens?: Token[],
     ): Nullable<Token> {
-        const tokens = tokenizer(text, {
+        const tokens = precomputedTokens ?? tokenizer(text, {
             hasBeginRules: false,
             options: this.muya.options,
         });
@@ -624,15 +630,27 @@ class Format extends Content {
             CLASS_NAMES.MU_MATH_RENDER,
             CLASS_NAMES.MU_RUBY_RENDER,
         ]);
+        // Tokenize the current text ONCE and reuse it for every cursor-type
+        // check below (math, code, and — when the text is unchanged by
+        // autoPair — emoji). These checks all use the same tokenizer options
+        // (`hasBeginRules: false`, `this.muya.options`, no labels), so parsing
+        // per-check was pure redundant work on every keystroke. See
+        // docs/dev/performance.md.
+        const cursorCheckTokens = tokenizer(textContent, {
+            hasBeginRules: false,
+            options: this.muya.options,
+        });
         const isInInlineMath = !!this._checkCursorInTokenType(
             textContent,
             start.offset,
             'inline_math',
+            cursorCheckTokens,
         );
         const isInInlineCode = !!this._checkCursorInTokenType(
             textContent,
             start.offset,
             'inline_code',
+            cursorCheckTokens,
         );
 
         let { needRender, text } = this.autoPair(
@@ -678,6 +696,10 @@ class Format extends Content {
                 this.text,
                 start.offset,
                 'emoji',
+                // Reuse the earlier parse only when autoPair left the text
+                // unchanged (same string, same options); otherwise parse the
+                // post-edit text fresh.
+                this.text === textContent ? cursorCheckTokens : undefined,
             );
             if (emojiToken && isEmojiToken(emojiToken)) {
                 const { content: emojiText } = emojiToken;
