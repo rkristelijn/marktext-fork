@@ -113,7 +113,7 @@ describe('typing perf — tokenizer calls per keystroke @perf', () => {
         console.log(`[perf] hasBeginRules:false calls (cursor checks) = ${beginRulesFalseCalls.length}`);
 
         // Exactly one shared parse for all cursor-type checks (was 3).
-        expect(beginRulesFalseCalls.length).toBe(1);
+        expect(beginRulesFalseCalls).toHaveLength(1);
     });
 
     it('tokenizer call count does not scale up with paragraph length (cost per call does)', () => {

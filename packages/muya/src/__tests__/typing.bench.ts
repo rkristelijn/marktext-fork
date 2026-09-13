@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import type Content from '../block/base/content';
-import { afterEach, beforeEach, describe, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { en } from '../locales';
 import { Muya } from '../muya';
 
@@ -73,6 +73,12 @@ describe('typing wall-clock bench @bench', () => {
             const ms = benchType(s.text, iterations);
             // eslint-disable-next-line no-console
             console.log(`[bench] ${s.label.padEnd(22)} ${ms.toFixed(4)} ms/keystroke (${iterations} iters)`);
+            // Sanity assertion (this is a measurement, not a timing gate): the
+            // per-keystroke cost must be a finite, positive number. Guards
+            // against benchType silently returning NaN/0 (e.g. if inputHandler
+            // no-ops), which would make the reported baselines meaningless.
+            expect(ms).toBeGreaterThan(0);
+            expect(Number.isFinite(ms)).toBe(true);
         }
     });
 });
