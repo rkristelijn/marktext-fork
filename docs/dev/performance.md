@@ -81,6 +81,30 @@ Use these numbers as a baseline. If you optimize the hot path, tighten the
 assertions so the win is pinned; if a refactor reintroduces extra parses, the
 upper-bound assertions catch the regression.
 
+**This spec runs in the normal `pnpm test` / CI run** — it is deterministic
+(a call count, not a timing), so it is a safe regression gate.
+
+### 1b. Wall-clock benchmarks (manual, NOT a CI gate)
+
+`packages/muya/src/__tests__/*.bench.ts` — run with:
+
+```bash
+pnpm --filter @muyajs/core test:bench
+```
+
+These report **wall-clock ms** (e.g. per-keystroke cost across paragraph
+sizes). They are measurement instruments, not pass/fail gates: wall-clock is
+environment-dependent and flaky across CI runners, so they are deliberately
+**excluded from the default run** (named `*.bench.ts`, matched only by
+`vitest.bench.config.ts`). Use them to produce before/after evidence for a perf
+PR. Example baseline for the tokenizer input hot path (happy-dom, M-class mac):
+
+```
+[bench] short (~40 chars)      0.17 ms/keystroke
+[bench] large (~2000 chars)    5.63 ms/keystroke   (was 7.52 before the fix, -25%)
+[bench] xl (~5000 chars)       13.85 ms/keystroke  (was 18.64 before the fix, -26%)
+```
+
 ### 2. Bulk-render smoke (e2e, generous budget)
 
 `packages/muya/e2e/tests/stability/perf.spec.ts`
@@ -173,5 +197,47 @@ Distilled from the Electron performance checklist and web-editor experience:
 3. Identify the top Self-Time function on the input/render path.
 4. Write or extend a `@perf` test that pins the current cost.
 5. Optimize the one hungriest thing. Re-measure. Repeat.
-6. Run the full suite (`pnpm --filter @muyajs/core test`) to confirm no
-   behavioral regression.
+6. Run the full suite (`pnpm --filter @muyajs/core test`) to confirm no behavioral regression.
+
+## Known hot spots + measured baselines (candidates for future work)
+
+These are measured, not yet optimized. Each is a candidate for its **own**
+focused PR (with its own before/after bench), not something to bundle here.
+Baselines below are from `test:bench` on happy-dom (M-class mac) — relative
+cost is meaningful; absolute ms differ from a production Chromium build.
+
+### The `json-change` handler re-serializes the whole document per edit
+
+`packages/desktop/src/renderer/src/components/editorWithTabs/editor.vue` — on
+every content change the handler calls `getMarkdown()` + `getState()` +
+`getTOC()`, each O(document size). `getMarkdown()` internally calls
+`getState()`, which `deepClone`s the whole state — so one change deep-clones the
+document **twice** and serializes it. Measured per-change cost:
+
+| Document   | getState | getMarkdown | getTOC  | total/change |
+| ---------- | -------- | ----------- | ------- | ------------ |
+| 50 paras   | 0.01 ms  | 0.03 ms     | 0.08 ms | **0.12 ms**  |
+| 500 paras  | 0.11 ms  | 0.20 ms     | 0.43 ms | **0.74 ms**  |
+| 2000 paras | 0.33 ms  | 0.67 ms     | 1.14 ms | **2.14 ms**  |
+
+Cost scales linearly with document size, so at extreme sizes (e.g. the ~300k
+words in #4887) this is a prime freeze suspect. Candidate optimizations, in
+ascending risk:
+
+1. **`getTOC()` is the single largest term** and recomputes every heading's
+   `tokenizer()` + slug on _every_ keystroke — even when typing far from any
+   heading and no heading text changed. Memoize / skip when headings are
+   unchanged. Isolated (TOC is a derived read), lowest risk.
+2. **Double deep-clone**: the handler calls `getState()` and `getMarkdown()`
+   (which calls `getState()` again). Reuse one state snapshot.
+3. **Debounce the whole handler** (biggest potential win, highest risk — the
+   store's save/dirty/word-count/TOC all consume this payload; needs care).
+
+Relates to #5115 (large documents slow) and #4887 (freeze on very large files).
+
+### Startup: V8 snapshots / lazy `require()`
+
+Proven 500–1000 ms startup wins in comparable editors (Atom, Inkdrop) via V8
+snapshots (`electron-link` + `mksnapshot`) and deferring heavy `require()`s.
+Large, build-pipeline-level effort — a separate initiative, not an editor-code
+change.
