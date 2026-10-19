@@ -15,6 +15,7 @@ export interface SerializedStat {
 }
 
 export interface MarkdownDocument {
+  isPendingCreation?: boolean
   markdown: string
   filename: string
   pathname: string | null
@@ -66,6 +67,8 @@ export interface FileSearchMatches {
  * `src/renderer/src/store/help.ts`.
  */
 export interface IFileState {
+  // A named CLI buffer can be unmodified while its target does not exist yet.
+  isPendingCreation?: boolean
   id: string
   filename: string
   // Falsy (`''`) for untitled buffers; pre-migration this was sometimes
@@ -118,6 +121,7 @@ export interface TabOptions {
 }
 
 export interface SaveOptions {
+  isPendingCreation?: boolean
   // Encoding is the `FileEncoding` object at runtime (`{ encoding, isBom }`).
   // String form is accepted for legacy callers that haven't been updated.
   encoding?: FileEncoding | string
@@ -171,3 +175,22 @@ export interface PageOptions {
 }
 
 export type ExportType = 'pdf' | 'html' | 'styledHtml' | 'png' | 'jpeg'
+
+/** Current document handed to the main process for a pandoc export. */
+export interface PandocExportPayload {
+  githubAlerts?: boolean
+  /** One of `PANDOC_EXPORT_FORMATS[].id`. */
+  target: string
+  markdown: string
+  /** Names the output when the tab has no path yet. */
+  title: string
+  /** Folder pandoc resolves the document's relative links against. */
+  pathname: string
+  /** Reader preferences only the renderer knows; see `getPandocReader`. */
+  superSubScript: boolean
+  footnote: boolean
+  texMathDollars: boolean
+  texMathGfm: boolean
+  texMathSingleBackslash: boolean
+  texMathDoubleBackslash: boolean
+}

@@ -1,3 +1,5 @@
+import type { GithubAlertType } from '../utils/githubAlerts';
+
 export interface IParagraphState {
     name: 'paragraph';
     text: string;
@@ -34,6 +36,10 @@ export interface ICodeBlockState {
         // first word — derive via `firstWordOfInfo()`, never assume a single word.
         lang: string;
         fenceLength?: number;
+        // Fence character for fenced blocks. Always written for `fenced`
+        // blocks; omitted only for `indented` ones, which have no fence.
+        // Older persisted state may still lack it — readers treat that as '`'.
+        fenceChar?: '`' | '~';
     };
     text: string;
 }
@@ -58,11 +64,28 @@ export interface ILinkReferenceDefinitionState {
 
 export interface IBlockQuoteState {
     name: 'block-quote';
+    meta?: {
+        style?: 'fenced';
+    };
+    children: TState[];
+}
+
+export interface IGithubAlertState {
+    name: 'github-alert';
+    meta: {
+        type: GithubAlertType;
+        // Preserve non-canonical marker spelling on round-trip.
+        marker?: string;
+        blankLineAfterMarker?: boolean;
+    };
     children: TState[];
 }
 
 export interface IListItemState {
     name: 'list-item';
+    meta?: {
+        orderMarker?: string; // e.g. "1.", "001.", "10)"
+    };
     children: TState[];
 }
 
@@ -72,6 +95,7 @@ export interface IOrderListState {
         start: number;
         loose: boolean;
         delimiter: string; // "." | ")";
+        sourceMarkers?: string[]; // Original item markers for no-edit source round-trips.
     };
     children: IListItemState[];
 }
@@ -107,6 +131,7 @@ export interface ITableState {
 
 export interface ITaskListItemMeta {
     checked: boolean;
+    orderMarker?: string; // e.g. "1.", "007.", "10)"
 }
 
 export interface ITaskListItemState {
@@ -115,9 +140,21 @@ export interface ITaskListItemState {
     children: TState[];
 }
 
-export interface ITaskListMeta {
+/** A task list is unordered (`marker`) or ordered (`start`/`delimiter`). */
+export type ITaskListMeta = ITaskListMetaUnordered | ITaskListMetaOrdered;
+
+export interface ITaskListMetaUnordered {
+    ordered?: false;
     marker: string; // "-" | "+" | "*";
     loose: boolean;
+}
+
+export interface ITaskListMetaOrdered {
+    ordered: true;
+    start: number;
+    delimiter: string; // "." | ")";
+    loose: boolean;
+    sourceMarkers?: string[]; // Original item markers for no-edit source round-trips.
 }
 
 export interface ITaskListState {
@@ -127,7 +164,7 @@ export interface ITaskListState {
 }
 
 export interface IMathMeta {
-    mathStyle: string; // "" | "gitlab";
+    mathStyle: string; // "" | "gfm";
 }
 
 export interface IMathBlockState {
@@ -183,6 +220,7 @@ export type TLeafState
 
 export type TContainerState
     = | IBlockQuoteState
+        | IGithubAlertState
         | IOrderListState
         | IBulletListState
         | ITableState
@@ -219,6 +257,7 @@ export const isDiagramState = (s: TState): s is IDiagramState => s.name === 'dia
 export const isTableCellState = (s: TState): s is ITableCellState => s.name === 'table.cell';
 
 export const isBlockQuoteState = (s: TState): s is IBlockQuoteState => s.name === 'block-quote';
+export const isGithubAlertState = (s: TState): s is IGithubAlertState => s.name === 'github-alert';
 export const isOrderListState = (s: TState): s is IOrderListState => s.name === 'order-list';
 export const isBulletListState = (s: TState): s is IBulletListState => s.name === 'bullet-list';
 export const isTableState = (s: TState): s is ITableState => s.name === 'table';

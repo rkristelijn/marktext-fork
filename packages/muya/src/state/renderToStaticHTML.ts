@@ -1,14 +1,19 @@
-import { EXPORT_DOMPURIFY_CONFIG } from '../config';
-import { sanitize } from '../utils';
 import { getHighlightHtml } from '../utils/marked';
+import { sanitizeExportHtml } from '../utils/sanitizeExportHtml';
 import { transformFootnotes } from './transformFootnotes';
 
 export interface IRenderToStaticHTMLOptions {
     footnote?: boolean;
-    math?: boolean;
-    isGitlabCompatibilityEnabled?: boolean;
+    texMathDollars?: boolean;
+    texMathGfm?: boolean;
+    texMathSingleBackslash?: boolean;
+    texMathDoubleBackslash?: boolean;
     superSubScript?: boolean;
     frontMatter?: boolean;
+    highlightSyntax?: boolean;
+    inlineDiff?: boolean;
+    multilineBlockquote?: boolean;
+    githubAlerts?: boolean;
     /**
      * Skip DOMPurify sanitization. **Unsafe with untrusted input** — drops
      * the XSS guarantees of the default export path. Only intended for
@@ -51,10 +56,16 @@ export function renderToStaticHTML(
 
     let html = getHighlightHtml(markdown, {
         footnote,
-        math: options.math ?? true,
-        isGitlabCompatibilityEnabled: options.isGitlabCompatibilityEnabled ?? true,
+        texMathDollars: options.texMathDollars ?? true,
+        texMathGfm: options.texMathGfm ?? false,
+        texMathSingleBackslash: options.texMathSingleBackslash ?? false,
+        texMathDoubleBackslash: options.texMathDoubleBackslash ?? false,
         superSubScript: options.superSubScript ?? true,
         frontMatter: options.frontMatter ?? false,
+        highlightSyntax: options.highlightSyntax ?? false,
+        inlineDiff: options.inlineDiff ?? false,
+        multilineBlockquote: options.multilineBlockquote ?? false,
+        githubAlerts: options.githubAlerts ?? false,
     });
 
     // Post-process footnotes into the standard GFM / pandoc shape (inline
@@ -68,5 +79,5 @@ export function renderToStaticHTML(
     if (options.sanitize === false)
         return html;
 
-    return sanitize(html, EXPORT_DOMPURIFY_CONFIG, false) as string;
+    return sanitizeExportHtml(html);
 }

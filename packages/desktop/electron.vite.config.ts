@@ -35,7 +35,6 @@ export default defineConfig({
       alias: {
         '@': resolve(__dirname, 'src/renderer/src'),
         common: resolve(__dirname, 'src/common'),
-        muya: resolve(__dirname, '../muyajs'),
         '@shared': resolve(__dirname, 'src/shared')
       },
       extensions: ['.mjs', '.ts', '.js', '.json']
@@ -44,18 +43,17 @@ export default defineConfig({
   preload: {
     // --> Bundled as CommonJS
     // With sandbox: true the renderer's preload can only `require('electron')`
-    // (plus a few built-ins). Inline `pathe` (ESM-only) so the bundled preload
-    // doesn't try to require it from node_modules at runtime.
+    // (plus a few built-ins). Inline `pathe` and `@std/path` (ESM-only) so the
+    // bundled preload doesn't try to require them from node_modules at runtime.
     build: {
       externalizeDeps: {
-        exclude: ['pathe']
+        exclude: ['pathe', '@jsr/std__path']
       }
     },
     resolve: {
       alias: {
         '@': resolve(__dirname, 'src/renderer/src'),
         common: resolve(__dirname, 'src/common'),
-        muya: resolve(__dirname, '../muyajs'),
         '@shared': resolve(__dirname, 'src/shared')
       },
       extensions: ['.mjs', '.ts', '.js', '.json']
@@ -66,9 +64,9 @@ export default defineConfig({
     // The renderer runs in a sandboxed Chromium context (contextIsolation: true,
     // nodeIntegration: false, sandbox: true). All Node access must go through
     // the preload → IPC bridge. Aliasing `path` → `pathe` lets the shared
-    // `common/*` helpers and muya keep their `import path from 'path'`
-    // statements without pulling in Node's path module. `pathe` always uses
-    // `/` separators and handles Windows drive letters correctly.
+    // `common/*` helpers keep their `import path from 'path'` statements
+    // without pulling in Node's path module. `pathe` always uses `/`
+    // separators and handles Windows drive letters correctly.
     assetsInclude: ['**/*.md'],
     // Some bundled deps (e.g. `custom-event` via `dragula`) reference the
     // Node-only `global` at module load — undefined in a sandboxed renderer.
@@ -81,19 +79,17 @@ export default defineConfig({
       alias: {
         '@': resolve(__dirname, 'src/renderer/src'),
         common: resolve(__dirname, 'src/common'),
-        muya: resolve(__dirname, '../muyajs'),
         '@shared': resolve(__dirname, 'src/shared'),
-        path: 'pathe'
+        // Shared `common/*` helpers import the bare `path` specifier; route it to
+        // a platform-correct module so the renderer never builds mixed-separator
+        // paths (#5683).
+        path: resolve(__dirname, 'src/renderer/src/node/platformPath.ts')
       },
       extensions: ['.mjs', '.ts', '.js', '.json', '.vue']
     },
     optimizeDeps: {
-      include: ['pako', 'pathe'],
-      esbuildOptions: {
-        define: {
-          global: 'globalThis'
-        }
-      }
+      // Vite's dev client exposes define.global at runtime for optimized deps.
+      include: ['pako', 'pathe']
     },
     plugins: [vue(), svgLoader()] as PluginOption[],
     css: {

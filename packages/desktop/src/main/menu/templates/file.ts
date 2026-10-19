@@ -5,13 +5,14 @@ import { isOsx } from '../../config'
 import { t } from '../../i18n'
 import type Keybindings from '../../keyboard/shortcutHandler'
 import type Preference from '../../preferences'
+import { PANDOC_EXPORT_FORMATS } from '../../utils/pandoc'
 
 export default function(
   keybindings: Keybindings,
   userPreference: Preference,
   recentlyUsedFiles: string[]
 ): MenuItemConstructorOptions {
-  const { autoSave } = userPreference.getAll() as { autoSave?: boolean }
+  const { autoSave, showPandocConvert } = userPreference.getAll()
   const submenu: MenuItemConstructorOptions[] = [
     {
       label: t('menu.file.newTab'),
@@ -168,6 +169,16 @@ export default function(
           }
         }
       ]
+    },
+    {
+      label: t('menu.file.convertWithPandoc'),
+      visible: !!showPandocConvert,
+      submenu: PANDOC_EXPORT_FORMATS.map((format) => ({
+        label: format.label,
+        click(_menuItem, browserWindow) {
+          actions.exportWithPandoc(browserWindow as BrowserWindow | undefined, format.id)
+        }
+      }))
     },
     {
       label: t('menu.file.print'),

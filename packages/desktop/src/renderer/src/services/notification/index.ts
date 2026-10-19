@@ -1,9 +1,12 @@
 import template from './index.html?raw'
 import { getUniqueId } from '../../util'
 import { sanitize, EXPORT_DOMPURIFY_CONFIG } from '../../util/dompurify'
+import { t } from '../../i18n'
 import './index.css'
 
 export type NotificationType = 'primary' | 'error' | 'warning' | 'info'
+
+const BASE_Z_INDEX = 10100
 
 const INON_HASH: Record<NotificationType, string> = {
   primary: 'icon-message',
@@ -72,12 +75,16 @@ const notification: NotificationService = {
     const contentContainer = noticeContainer.querySelector('.content') as HTMLElement
     const fluent = noticeContainer.querySelector('.fluent') as HTMLElement
     const close = noticeContainer.querySelector('.close') as HTMLElement
+    const confirm = noticeContainer.querySelector('.confirm') as HTMLElement
     const { offsetHeight } = noticeContainer
     let target: HTMLElement = noticeContainer
 
+    close.setAttribute('aria-label', t('dialog.close'))
+    confirm.setAttribute('aria-label', t('common.ok'))
+
     if (showConfirm) {
       noticeContainer.classList.add('mt-confirm')
-      target = noticeContainer.querySelector('.confirm') as HTMLElement
+      target = confirm
     }
 
     noticeContainer.classList.add(TYPE_HASH[type])
@@ -131,6 +138,9 @@ const notification: NotificationService = {
       if (rj) rj()
     }
 
+    // Newest on top, and the whole stack above every overlay in the app — a
+    // notification is the only channel for reporting a failure. Keep in step
+    // with `.mt-notification` in index.css.
     const rePositionNotices = (): void => {
       const notices = document.querySelectorAll('.mt-notification')
       let i
@@ -139,7 +149,7 @@ const notification: NotificationService = {
       for (i = 0; i < len; i++) {
         const el = notices[i] as HTMLElement
         el.style.transform = `translate(0, -${hx}px)`
-        el.style.zIndex = String(10000 - i)
+        el.style.zIndex = String(BASE_Z_INDEX - i)
         hx += el.offsetHeight + 10
       }
     }

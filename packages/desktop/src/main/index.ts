@@ -13,6 +13,7 @@ import Accessor from './app/accessor'
 import App from './app'
 import { t } from './i18n'
 import { registerSandboxIpcHandlers } from './ipc'
+import { setPlantumlServerSource } from './ipc/diagram'
 
 // Set version strings into global and process.versions
 process.env.MARKTEXT_VERSION = MARKTEXT_VERSION
@@ -26,7 +27,7 @@ const appEnvironment = setupEnvironment(args as Record<string, unknown>)
 
 const initializeLogger = (env: AppEnvironment): void => {
   log.initialize() // allows listening for logs from the renderer process
-  log.transports.console.level = process.env.NODE_ENV === 'development' ? 'info' : 'error'
+  log.transports.console.level = import.meta.env.DEV ? 'info' : 'error'
   log.transports.file.resolvePathFn = (variables) => {
     // electron-log's PathVariables type doesn't model the browserWindow field
     // that's available at runtime for renderer-process logs. Cast through
@@ -53,7 +54,7 @@ initializeLogger(appEnvironment)
 // Handles native level crashes
 crashReporter.start({
   companyName: '',
-  productName: 'marktext',
+  productName: 'MarkText',
   uploadToServer: false, // collect locally
   compress: true
 })
@@ -71,8 +72,10 @@ if (args['--disable-gpu']) {
 }
 
 // Single instance lock (except macOS & development)
-if (!process.mas && process.env.NODE_ENV !== 'development') {
-  const gotLock = app.requestSingleInstanceLock()
+if (!process.mas && !import.meta.env.DEV) {
+  // The running instance reads the files to open from this copy of the command
+  // line; see its `second-instance` handler.
+  const gotLock = app.requestSingleInstanceLock({ argv: process.argv })
   if (!gotLock) {
     process.stdout.write(t('error.otherInstanceDetected'))
     process.exit(0)
@@ -111,6 +114,10 @@ try {
   }
   process.exit(1)
 }
+// Preferences only exist now; the fetch handler refuses everything until it
+// knows which server the user configured.
+setPlantumlServerSource(() => accessor.preferences.getItem<string>('plantumlServer') ?? '')
+
 const appController = new App(accessor, args as unknown as { _: string[] })
 appController.init()
 

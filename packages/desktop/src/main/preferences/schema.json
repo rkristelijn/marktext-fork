@@ -119,6 +119,11 @@
     "type": "boolean",
     "default": true
   },
+  "sourceCodeLineNumbers": {
+    "description": "Editor--Show line numbers in source code mode",
+    "type": "boolean",
+    "default": true
+  },
   "trimUnnecessaryCodeBlockEmptyLines": {
     "description": "Editor--Trim the beginning and ending empty lines in code block",
     "type": "boolean",
@@ -266,15 +271,50 @@
     "type": "boolean",
     "default": false
   },
+  "texMathDollars": {
+    "description": "Markdown-Enable pandoc's markdown extension tex_math_dollars.",
+    "type": "boolean",
+    "default": true
+  },
+  "texMathGfm": {
+    "description": "Markdown-Enable pandoc's markdown extension tex_math_gfm.",
+    "type": "boolean",
+    "default": false
+  },
+  "texMathSingleBackslash": {
+    "description": "Markdown-Enable pandoc's markdown extension tex_math_single_backslash.",
+    "type": "boolean",
+    "default": false
+  },
+  "texMathDoubleBackslash": {
+    "description": "Markdown-Enable pandoc's markdown extension tex_math_double_backslash.",
+    "type": "boolean",
+    "default": false
+  },
+  "highlightSyntax": {
+    "description": "Markdown-Enable the non-standard ==highlight== markdown syntax.",
+    "type": "boolean",
+    "default": false
+  },
+  "inlineDiff": {
+    "description": "Markdown-Enable the non-standard {+ … +} / [- … -] inline diff syntax.",
+    "type": "boolean",
+    "default": false
+  },
+  "githubAlerts": {
+    "description": "Markdown-Enable GitHub Alerts.",
+    "type": "boolean",
+    "default": false
+  },
+  "multilineBlockquote": {
+    "description": "Markdown-Enable the non-standard >>> … >>> multiline blockquote syntax.",
+    "type": "boolean",
+    "default": false
+  },
   "isHtmlEnabled": {
     "description": "Markdown-Enable HTML rendering",
     "type": "boolean",
     "default": true
-  },
-  "isGitlabCompatibilityEnabled": {
-    "description": "Markdown-Enable GitLab compatibility mode.",
-    "type": "boolean",
-    "default": false
   },
   "softNewlineAsSpace": {
     "description": "Markdown--Treat a soft line break (a single bare newline within a paragraph) as a space instead of a line break.",
@@ -377,6 +417,16 @@
     "description": "General--Whether to show opened files in the sidebar.",
     "type": "boolean",
     "default": true
+  },
+  "autoRevealInSidebar": {
+    "description": "General--Whether to reveal the active file in the sidebar file tree.",
+    "type": "boolean",
+    "default": true
+  },
+  "showPandocConvert": {
+    "description": "General--Show the Pandoc conversion menu. Requires Pandoc to be installed.",
+    "type": "boolean",
+    "default": false
   },
   "searchExclusions": {
     "description": "Searcher--List of glob patterns to exclude from search.--internal",

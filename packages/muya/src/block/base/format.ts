@@ -5,11 +5,13 @@ import type {
     Token,
 } from '../../inlineRenderer/types';
 import type { IContentCursor, IRenderCursor } from '../../selection/types';
-import type { IBulletListState, IListItemState, IOrderListState, IParagraphState } from '../../state/types';
+import type { IBulletListState, IListItemState, IOrderListState, IParagraphState, ITaskListState } from '../../state/types';
 import type { Nullable } from '../../types';
+import type { ColorFormatType, IColorStyle } from '../../utils/colorSpan';
 import type { IImageInfo } from '../../utils/image';
 import type AtxHeading from '../commonMark/atxHeading';
 import type BulletList from '../commonMark/bulletList';
+import type OrderList from '../commonMark/orderList';
 import type SetextHeading from '../commonMark/setextHeading';
 import type Parent from './parent';
 import type TreeNode from './treeNode';
@@ -27,7 +29,8 @@ import { generator, tokenizer } from '../../inlineRenderer/lexer';
 import Selection, { getCursorReference } from '../../selection';
 import { getTextContent } from '../../selection/dom';
 import { isListItemState } from '../../state/types';
-import { conflict, escapeHTML, isHTMLElement, isMouseEvent } from '../../utils';
+import { conflict, escapeHTML, firstGraphemeLength, isHTMLElement, isKeyboardEvent, isMouseEvent, lastGraphemeLength } from '../../utils';
+import { COLOR_SPAN_CLOSE_TAG, colorPropertyOf, colorSpanOpenTag, isColorStyleEmpty, parseColorStyle } from '../../utils/colorSpan';
 import { correctImageSrc, encodeImageSrc, getImageInfo } from '../../utils/image';
 import logger from '../../utils/logger';
 
@@ -119,19 +122,25 @@ function getOffset(offset: number, token: Token) {
 
         case 'inline_code':
 
+        case 'mark':
+
+        case 'inline_diff':
+
         case 'inline_math': {
-            const markerLen = type === 'strong' || type === 'del' ? 2 : 1;
+            const markerLen = token.marker.length;
             return markeredOffset(dis, len, markerLen, markerLen);
         }
 
         case 'html_tag': {
             const { tag } = token;
-            // handle underline, sup, sub
+            // Tags outside the fixed map (e.g. a colour `<span>`) size their
+            // markers from the token itself.
+            const markers = FORMAT_TAG_MAP[tag];
             return markeredOffset(
                 dis,
                 len,
-                FORMAT_TAG_MAP[tag].open.length,
-                FORMAT_TAG_MAP[tag].close.length,
+                markers ? markers.open.length : token.openTag?.length ?? 0,
+                markers ? markers.close.length : token.closeTag?.length ?? 0,
             );
         }
 
@@ -150,6 +159,26 @@ function clearFormat(token: Token, cursor: IContentCursor) {
         case 'del':
 
         case 'em':
+
+        case 'mark': {
+            const { parent, children, backlash } = token;
+            const index = parent.indexOf(token);
+            const replacement: Token[] = [...(children as Token[])];
+
+            if (backlash) {
+                replacement.push({
+                    type: 'text',
+                    raw: backlash,
+                    content: backlash,
+                    parent,
+                    range: token.range,
+                });
+            }
+
+            parent.splice(index, 1, ...replacement);
+
+            break;
+        }
 
         case 'link':
 
@@ -180,7 +209,9 @@ function clearFormat(token: Token, cursor: IContentCursor) {
 
         case 'inline_math':
 
-        case 'inline_code': {
+        case 'inline_code':
+
+        case 'inline_diff': {
             const { parent, range } = token;
             const index = parent.indexOf(token);
             const newToken: TextToken = {
@@ -218,9 +249,54 @@ function checkTokenIsInlineFormat(token: Token) {
         return true;
 
     if (type === 'html_tag')
-        return /^(?:u|sub|sup|mark)$/i.test(token.tag);
+        return /^(?:u|sub|sup|mark)$/i.test(token.tag) || isColorSpanToken(token);
 
     return false;
+}
+
+function isColorSpanToken(token: Token): boolean {
+    if (token.type !== 'html_tag' || token.tag.toLowerCase() !== 'span')
+        return false;
+
+    return parseColorStyle(token.attrs?.style) !== null;
+}
+
+interface IColorSpan {
+    openStart: number;
+    contentStart: number;
+    contentEnd: number;
+    closeEnd: number;
+    style: IColorStyle;
+}
+
+function collectColorSpans(
+    tokens: Token[],
+    rangeStart: number,
+    rangeEnd: number,
+    out: IColorSpan[] = [],
+): IColorSpan[] {
+    for (const token of tokens) {
+        if (token.range.end <= rangeStart || token.range.start >= rangeEnd)
+            continue;
+
+        if (token.type === 'html_tag' && token.tag.toLowerCase() === 'span') {
+            const style = parseColorStyle(token.attrs?.style);
+            if (style && token.openTag && token.closeTag) {
+                out.push({
+                    openStart: token.range.start,
+                    contentStart: token.range.start + token.openTag.length,
+                    contentEnd: token.range.end - token.closeTag.length,
+                    closeEnd: token.range.end,
+                    style,
+                });
+            }
+        }
+
+        if ('children' in token && Array.isArray(token.children))
+            collectColorSpans(token.children, rangeStart, rangeEnd, out);
+    }
+
+    return out;
 }
 
 class Format extends Content {
@@ -234,6 +310,7 @@ class Format extends Content {
         text: string,
         offset: number,
         type: Token['type'],
+        includeEnd = false,
     ): Nullable<Token> {
         const tokens = tokenizer(text, {
             hasBeginRules: false,
@@ -250,7 +327,7 @@ class Format extends Content {
                 if (
                     token.type === type
                     && offset > token.range.start
-                    && offset < token.range.end
+                    && (offset < token.range.end || (includeEnd && offset === token.range.end))
                 ) {
                     result = token;
                     break;
@@ -624,10 +701,13 @@ class Format extends Content {
             CLASS_NAMES.MU_MATH_RENDER,
             CLASS_NAMES.MU_RUBY_RENDER,
         ]);
+        // Also counts the caret right after the `$` that closed the formula, so
+        // typing `$$x$$` does not pair that `$` into `$$x$$$`.
         const isInInlineMath = !!this._checkCursorInTokenType(
             textContent,
             start.offset,
             'inline_math',
+            true,
         );
         const isInInlineCode = !!this._checkCursorInTokenType(
             textContent,
@@ -703,6 +783,11 @@ class Format extends Content {
 
     private _convertIfNeeded() {
         const { text } = this;
+        // A run of `>` with nothing else is the prefix of a GitLab `>>>` fence,
+        // so hold off promoting it to a blockquote until the user types more
+        // (a space, or the rest of the quote).
+        const pendingFence
+            = this.muya.options.multilineBlockquote && /^ {0,3}>+$/.test(text);
 
         const [
             match,
@@ -742,7 +827,7 @@ class Format extends Content {
                 this._convertToSetextHeading(setextHeading);
                 break;
 
-            case !!blockquote:
+            case !!blockquote && !pendingFence:
                 this._convertToBlockQuote();
                 break;
 
@@ -901,28 +986,39 @@ class Format extends Content {
             firstContent._convertToTaskList();
     }
 
+    // The item becomes a task item; an ordered list keeps its numbering.
     private _convertToTaskList() {
         const { text, parent, muya, hasSelection } = this;
         const { preferLooseListItem } = muya.options;
         const listItem = parent!.parent!;
-        const list = listItem?.parent as BulletList;
+        const list = listItem?.parent as BulletList | OrderList;
         const matches = text.match(/^\[([x ])\] {1,4}([\s\S]*)$/i);
 
         if (
             !list
-            || list.blockName !== 'bullet-list'
+            || (list.blockName !== 'bullet-list' && list.blockName !== 'order-list')
             || !parent!.isFirstChild()
             || matches == null
         ) {
             return;
         }
 
-        const listState = {
+        const offset = list.offset(listItem);
+        const ordered = list.blockName === 'order-list';
+        const meta: ITaskListState['meta'] = ordered
+            ? {
+                    ordered: true,
+                    loose: preferLooseListItem,
+                    start: (list.meta as IOrderListState['meta']).start + offset,
+                    delimiter: (list.meta as IOrderListState['meta']).delimiter,
+                }
+            : {
+                    loose: preferLooseListItem,
+                    marker: (list.meta as IBulletListState['meta']).marker,
+                };
+        const listState: ITaskListState = {
             name: 'task-list',
-            meta: {
-                loose: preferLooseListItem,
-                marker: list.meta.marker,
-            },
+            meta,
             children: [
                 {
                     name: 'task-list-item',
@@ -963,6 +1059,22 @@ class Format extends Content {
             case listItem.isFirstChild():
                 list.parent!.insertBefore(newTaskList, list);
                 listItem.remove();
+                // Dropping the leading item shifts the tail's numbers up by one.
+                if (ordered) {
+                    const listMeta = list.meta as IOrderListState['meta'];
+                    const oldStart = listMeta.start;
+                    listMeta.start = oldStart + 1;
+                    list.domNode!.setAttribute('start', String(listMeta.start));
+                    // `path` ends at the children array; the meta sits one level up.
+                    const path = list.path;
+                    path.pop();
+                    path.push('meta', 'start');
+                    list.jsonState.replaceOperation(
+                        path,
+                        oldStart,
+                        listMeta.start,
+                    );
+                }
                 break;
 
             case listItem.isLastChild():
@@ -971,30 +1083,40 @@ class Format extends Content {
                 break;
 
             default: {
-                const bulletListState: IBulletListState = {
-                    name: 'bullet-list',
-                    meta: {
-                        loose: preferLooseListItem,
-                        marker: list.meta.marker,
-                    },
-                    children: [],
-                };
-                const offset = list.offset(listItem);
-                list.forEachAt(offset + 1, undefined, (node) => {
+                // The tail keeps the same list kind, numbered past the converted item.
+                const tailState: IBulletListState | IOrderListState = ordered
+                    ? {
+                            name: 'order-list',
+                            meta: {
+                                loose: preferLooseListItem,
+                                start: (list.meta as IOrderListState['meta']).start + offset + 1,
+                                delimiter: (list.meta as IOrderListState['meta']).delimiter,
+                            },
+                            children: [],
+                        }
+                    : {
+                            name: 'bullet-list',
+                            meta: {
+                                loose: preferLooseListItem,
+                                marker: (list.meta as IBulletListState['meta']).marker,
+                            },
+                            children: [],
+                        };
+                list.forEachAt(offset + 1, undefined, (node: TreeNode) => {
                     if (node.isParent()) {
                         const childState = node.getState();
                         if (isListItemState(childState))
-                            bulletListState.children.push(childState);
+                            tailState.children.push(childState);
                     }
                     node.remove();
                 });
 
-                const bulletList = ScrollPage.loadBlock(bulletListState.name).create(
+                const tailList = ScrollPage.loadBlock(tailState.name).create(
                     muya,
-                    bulletListState,
+                    tailState,
                 );
                 list.parent!.insertAfter(newTaskList, list);
-                newTaskList.parent.insertAfter(bulletList, newTaskList);
+                newTaskList.parent.insertAfter(tailList, newTaskList);
                 listItem.remove();
                 break;
             }
@@ -1317,21 +1439,25 @@ class Format extends Content {
         if (!start || !end || start?.offset !== end?.offset)
             return;
 
+        // Ctrl/Alt/Cmd+Backspace deletes a word or line: leave it to the browser (#5239).
+        if (isKeyboardEvent(event) && (event.ctrlKey || event.altKey || event.metaKey))
+            return;
+
         this.muya.editor.history.markInputBoundary('deleteContentBackward', null);
 
         // fix: #897 in marktext repo
         const { text } = this;
-        const { footnote, superSubScript } = this.muya.options;
+        const { footnote, superSubScript, texMathDollars, texMathGfm, texMathSingleBackslash, texMathDoubleBackslash, highlightSyntax, inlineDiff } = this.muya.options;
         const { labels } = this.inlineRenderer;
         const tokens = tokenizer(text, {
             labels,
-            options: { footnote, superSubScript },
+            options: { footnote, superSubScript, texMathDollars, texMathGfm, texMathSingleBackslash, texMathDoubleBackslash, highlightSyntax, inlineDiff },
         });
         // The caret offset is unreliable when it is parked on a
         // `contenteditable=false` inline image; resolve the real offset from the
         // DOM so the scan can match the image token like any other caret.
         const offset = this._caretOffsetOnInlineImage() ?? start.offset;
-        const { needRender, imageToken, referenceImageToken }
+        const { needRender, imageToken, referenceImageToken, offsetDelta }
             = this._scanBackspaceTokens(tokens, offset);
 
         if (referenceImageToken) {
@@ -1347,9 +1473,12 @@ class Format extends Content {
             event.preventDefault();
             this.text = generator(tokens);
 
-            start.offset--;
-            end.offset--;
+            start.offset -= offsetDelta;
+            end.offset -= offsetDelta;
             this.setCursor(start.offset, end.offset, true);
+            // The native Backspace this replaces would re-read the block type
+            // in `inputHandler` (#5388).
+            this.checkInlineUpdate();
         }
 
         if (imageToken) {
@@ -1375,6 +1504,7 @@ class Format extends Content {
         needRender: boolean;
         imageToken: Token | null;
         referenceImageToken: Token | null;
+        offsetDelta: number;
     } {
         for (const token of tokens) {
             // An inline image followed by other content: the caret lands on the
@@ -1384,31 +1514,36 @@ class Format extends Content {
                 = token.type === 'image'
                     || (token.type === 'html_tag' && token.tag === 'img');
             if (token.range.end === offset && isImageToken)
-                return { needRender: false, imageToken: token, referenceImageToken: null };
+                return { needRender: false, imageToken: token, referenceImageToken: null, offsetDelta: 0 };
 
             // A reference image (`![alt][ref]`) is editable marked text, so it has
             // no inline-image wrapper to select. Delete the whole token at once.
             if (token.range.end === offset && token.type === 'reference_image')
-                return { needRender: false, imageToken: null, referenceImageToken: token };
+                return { needRender: false, imageToken: null, referenceImageToken: token, offsetDelta: 0 };
 
             // handle delete the second marker(et:*、$) in inline syntax.(Firefox compatible)
             // Fix: https://github.com/marktext/muya/issues/113
             // for example: foo **strong**|
             if (token.range.end === offset) {
-                token.raw = token.raw.substring(0, token.raw.length - 1);
-                return { needRender: true, imageToken: null, referenceImageToken: null };
+                // Remove a whole trailing character — a grapheme cluster, so an
+                // emoji is deleted in one piece instead of losing one code unit
+                // (or one code point) of it (#4926).
+                const removedLength = lastGraphemeLength(token.raw);
+                token.raw = token.raw.substring(0, token.raw.length - removedLength);
+                return { needRender: true, imageToken: null, referenceImageToken: null, offsetDelta: removedLength };
             }
 
-            // If preToken is a syntax token, the the cursor is at offset 1, need to set the cursor manually.(Firefox compatible)
-            // // Fix: https://github.com/marktext/muya/issues/113
-            // for example: foo **strong**w|
-            if (token.range.start + 1 === offset) {
-                token.raw = token.raw.substring(1);
-                return { needRender: true, imageToken: null, referenceImageToken: null };
+            // When the caret is just after a token's first character, remove
+            // that character and place the cursor manually (Firefox parity).
+            // Fix: https://github.com/marktext/muya/issues/113
+            const removedLength = firstGraphemeLength(token.raw);
+            if (token.range.start + removedLength === offset) {
+                token.raw = token.raw.substring(removedLength);
+                return { needRender: true, imageToken: null, referenceImageToken: null, offsetDelta: removedLength };
             }
         }
 
-        return { needRender: false, imageToken: null, referenceImageToken: null };
+        return { needRender: false, imageToken: null, referenceImageToken: null, offsetDelta: 0 };
     }
 
     // Resolve the real caret offset when the collapsed caret is parked on a
@@ -1495,12 +1630,15 @@ class Format extends Content {
         this.text = text + nextBlock.text;
         this.setCursor(start.offset, end.offset, true);
 
-        // When the merge crosses a list-item boundary, blocks that followed the
-        // next paragraph inside its item (e.g. a nested sublist) must travel up
-        // with the merged text. Left behind they become the sole child of the
-        // now-empty item and serialize with a doubled bullet (#1845).
-        const paragraph = this.parent;
-        if (paragraph && paragraphBlock.parent !== paragraph.parent) {
+        // Blocks after the merged paragraph in a list item (e.g. a nested
+        // sublist) move up with it, or they would serialize with a doubled
+        // bullet (#1845). Other containers keep them (#5423). From a table cell
+        // they go after the table, since a row holds only cells (#5386).
+        const hostBlock = this.getAnchor();
+        const nextContainer = paragraphBlock.parent;
+        const nextContainerIsListItem = nextContainer?.blockName === 'list-item'
+            || nextContainer?.blockName === 'task-list-item';
+        if (hostBlock && nextContainer !== hostBlock.parent && nextContainerIsListItem) {
             const trailing: TreeNode[] = [];
             let sibling = paragraphBlock.next;
             while (sibling) {
@@ -1508,9 +1646,9 @@ class Format extends Content {
                 sibling = sibling.next;
             }
 
-            let anchor: Parent = paragraph;
+            let anchor: Parent = hostBlock;
             for (const block of trailing) {
-                block.insertInto(paragraph.parent!, anchor.next as Nullable<Parent>);
+                block.insertInto(hostBlock.parent!, anchor.next as Nullable<Parent>);
                 anchor = block as Parent;
             }
         }
@@ -1722,6 +1860,140 @@ class Format extends Content {
         }
 
         this.setCursor(start.offset, end.offset, true);
+    }
+
+    /**
+     * Unlike `format()`, this replaces rather than only toggles: picking the
+     * applied colour clears it, a different colour replaces it, and the other
+     * declaration on a shared span is preserved (both stay in one span).
+     */
+    formatColor(type: ColorFormatType, value: string | null): void {
+        const cursor = this.getCursor();
+        if (cursor == null)
+            return;
+
+        const start = cursor.start.offset;
+        const end = cursor.end.offset;
+        if (start == null || end == null)
+            return;
+        if (start === end)
+            return;
+
+        const property = colorPropertyOf(type);
+        const text = this.text;
+        const tokens = tokenizer(text, { options: this.muya.options });
+        const spans = collectColorSpans(tokens, start, end).sort(
+            (a, b) => a.openStart - b.openStart,
+        );
+
+        const representative = spans
+            .filter(s => s.contentStart <= start && s.contentEnd >= end)
+            .sort(
+                (a, b) =>
+                    a.contentEnd - a.contentStart - (b.contentEnd - b.contentStart),
+            )[0];
+        const currentValue
+            = property === 'color'
+                ? representative?.style.color ?? null
+                : representative?.style.backgroundColor ?? null;
+
+        if (value !== null && value === currentValue)
+            value = null;
+
+        const targetStyle: IColorStyle = { color: null, backgroundColor: null };
+        if (value !== null) {
+            if (property === 'color')
+                targetStyle.color = value;
+            else
+                targetStyle.backgroundColor = value;
+        }
+
+        const mergeStyle = (base: IColorStyle): IColorStyle => {
+            const style: IColorStyle = { color: null, backgroundColor: null };
+            if (property === 'color')
+                style.backgroundColor = base.backgroundColor;
+            else
+                style.color = base.color;
+            if (value !== null) {
+                if (property === 'color')
+                    style.color = value;
+                else
+                    style.backgroundColor = value;
+            }
+
+            return style;
+        };
+
+        let output = '';
+        let newStart = start;
+        let newEnd = end;
+        let placedStart = false;
+
+        const emit = (a: number, b: number, style: IColorStyle) => {
+            if (a >= b)
+                return;
+
+            // Chunks are emitted in source order and align with the selection
+            // edges, so mapping start/end by "which chunks the selection covers"
+            // stays correct even when an edge lands on a span's tag boundary
+            // (there `a === start`/`b === end` never holds, which left the raw
+            // pre-edit offset pointing into the regenerated markup).
+            const inSelection = b > start && a < end;
+            const tag = isColorStyleEmpty(style) ? '' : colorSpanOpenTag(style);
+            if (tag)
+                output += tag;
+            if (inSelection && !placedStart) {
+                newStart = output.length;
+                placedStart = true;
+            }
+            output += text.slice(a, b);
+            if (inSelection)
+                newEnd = output.length;
+            if (tag)
+                output += COLOR_SPAN_CLOSE_TAG;
+        };
+
+        const empty: IColorStyle = { color: null, backgroundColor: null };
+        const emitGap = (a: number, b: number) => {
+            if (a >= b)
+                return;
+            if (b <= start || a >= end) {
+                emit(a, b, empty);
+                return;
+            }
+            if (a < start)
+                emit(a, start, empty);
+            emit(Math.max(a, start), Math.min(b, end), targetStyle);
+            if (b > end)
+                emit(Math.min(b, end), b, empty);
+        };
+
+        let pos = 0;
+        for (const span of spans) {
+            if (span.openStart < pos)
+                continue;
+
+            emitGap(pos, span.openStart);
+
+            const leftEnd = Math.min(
+                Math.max(start, span.contentStart),
+                span.contentEnd,
+            );
+            const midEnd = Math.min(
+                Math.max(end, span.contentStart),
+                span.contentEnd,
+            );
+            emit(span.contentStart, leftEnd, span.style);
+            emit(leftEnd, midEnd, mergeStyle(span.style));
+            emit(midEnd, span.contentEnd, span.style);
+            pos = span.closeEnd;
+        }
+        emitGap(pos, text.length);
+
+        if (output !== text)
+            this.text = output;
+
+        this.setCursor(newStart, newEnd, true);
     }
 
     private _addFormat(

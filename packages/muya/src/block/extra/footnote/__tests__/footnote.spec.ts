@@ -7,6 +7,7 @@ import { CLASS_NAMES } from '../../../../config';
 import { MarkdownToState } from '../../../../state/markdownToState';
 import ExportMarkdown from '../../../../state/stateToMarkdown';
 import { isFootnoteBlockState } from '../../../../state/types';
+import Parent from '../../../base/parent';
 import { registerBlocks } from '../../../index';
 import { ScrollPage } from '../../../scrollPage';
 
@@ -75,14 +76,11 @@ describe('footnote block — class API', () => {
     it('remove("api") detaches the block DOM and clears its parent link', () => {
         const muya = makeFakeMuya();
         const block = Footnote.create(muya, baseState);
-        const parentDom = document.createElement('div');
-        parentDom.appendChild(block.domNode!);
-        // Plug into a minimal fake Parent so remove('api') walks the tree
-        // without dispatching ot-json1 operations against a real editor.
-        block.parent = {
-            children: { remove: () => {} },
-            domNode: parentDom,
-        } as never;
+        const parent = new Parent(muya);
+        parent.tagName = 'div';
+        parent.createDomNode();
+        parent.append(block);
+        const parentDom = parent.domNode!;
 
         block.remove('api');
 
@@ -115,8 +113,10 @@ describe('footnote block — markdown round-trip via state', () => {
     function roundTrip(md: string): string {
         const states = new MarkdownToState({
             footnote: true,
-            math: false,
-            isGitlabCompatibilityEnabled: false,
+            texMathDollars: false,
+            texMathGfm: false,
+            texMathSingleBackslash: false,
+            texMathDoubleBackslash: false,
             trimUnnecessaryCodeBlockEmptyLines: false,
             frontMatter: false,
         }).generate(md);
@@ -145,8 +145,10 @@ describe('footnote block — markdown round-trip via state', () => {
 `;
         const states = new MarkdownToState({
             footnote: true,
-            math: false,
-            isGitlabCompatibilityEnabled: false,
+            texMathDollars: false,
+            texMathGfm: false,
+            texMathSingleBackslash: false,
+            texMathDoubleBackslash: false,
             trimUnnecessaryCodeBlockEmptyLines: false,
             frontMatter: false,
         }).generate(md);

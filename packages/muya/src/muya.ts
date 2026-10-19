@@ -3,6 +3,7 @@ import type Parent from './block/base/parent';
 import type { TBlockPath } from './block/types';
 import type { Listener } from './event/types';
 import type { ILocale } from './i18n/types';
+import type { IReplaceOption, ISearchOption } from './search/types';
 import type { IIndexCursor } from './selection/offsetCursor';
 import type { IHistorySelection, IPublicCursorInput } from './selection/types';
 import type { ITocItem } from './state/getTOC';
@@ -10,6 +11,8 @@ import type { IBulletListState, IOrderListState, ITableState, ITaskListState, TS
 import type { IMuyaOptions, Nullable } from './types';
 import Format from './block/base/format';
 import { canTurnInto, insertBlockBelowByLabel, insertFrontMatterAtStart, replaceBlockByLabel } from './block/blockTransforms';
+import { revealBlock } from './block/folding';
+import { canConvertGithubAlert, convertGithubAlert } from './block/githubAlerts';
 import { ScrollPage } from './block/scrollPage';
 import emptyStates from './config/emptyStates';
 import {
@@ -18,8 +21,8 @@ import {
     MUYA_DEFAULT_OPTIONS,
     URL_REG,
 } from './config/index';
-
 import { Editor } from './editor/index';
+
 import EventCenter from './event/index';
 import I18n from './i18n/index';
 import {
@@ -28,13 +31,16 @@ import {
     locateSentinelOffsets,
     resolveSentinelCursor,
 } from './selection/offsetCursor';
-import { isAnyListState, isAtxHeadingState, isCodeBlockState } from './state/types';
+import { isAnyListState, isAtxHeadingState, isCodeBlockState, isSetextHeadingState } from './state/types';
 import { Ui } from './ui/ui';
 import { deepClone } from './utils';
+import { getBlock } from './utils/dom';
+import { GITHUB_ALERT_TYPES, githubAlertBlockType, githubAlertMarker } from './utils/githubAlerts';
 import { encodeImageSrc } from './utils/image';
 import './assets/styles/blockSyntax.css';
 import './assets/styles/index.css';
 import './assets/styles/inlineSyntax.css';
+import './assets/styles/githubAlerts.css';
 import './assets/styles/prismjs/light.theme.css';
 
 // UI plugins (e.g. InlineFormatToolbar, EmojiSelector) follow a common
@@ -65,6 +71,10 @@ interface ISelectionSnapshot {
 // Maps the paragraph-menu labels the desktop sends through `updateParagraph`
 // to muya's `replaceBlockByLabel` vocabulary.
 const PARAGRAPH_LABEL_MAP: Record<string, string> = {
+    ...GITHUB_ALERT_TYPES.reduce<Record<string, string>>((labels, type) => {
+        labels[`github-alert ${type}`] = `github-alert ${type}`;
+        return labels;
+    }, {}),
     'paragraph': 'paragraph',
     'hr': 'thematic-break',
     'front-matter': 'frontmatter',
@@ -106,17 +116,34 @@ const TOGGLEABLE_BLOCK_LABELS = new Set([
     'thematic-break',
 ]);
 
+// Blocks whose content leaves sit on inner nodes (table cells, the code node),
+// so a paragraph command at such a caret acts on the block as a whole. As in
+// muyajs, such a block is never converted into another type, and never
+// replaced just because its first leaf is empty.
+const WHOLE_BLOCK_NAMES = new Set([
+    'table',
+    'code-block',
+    'html-block',
+    'math-block',
+    'diagram',
+    'frontmatter',
+]);
+
+const HEADING_LEVEL_BLOCK_NAMES = new Set(['paragraph', 'atx-heading', 'setext-heading']);
+
 // Options consumed by the markdown→state lexer (markdownToState / lexBlock).
 // Changing any of these re-classifies block structure (e.g. ```math ⇄ code
-// block under GitLab compatibility, front matter, footnote definitions), which
+// block under tex_math_gfm, front matter, footnote definitions), which
 // a render-only rebuild from the already-parsed state cannot reflect — the
 // document must be re-parsed from markdown. See setOptions below.
 const PARSE_AFFECTING_OPTIONS = new Set<keyof IMuyaOptions>([
-    'isGitlabCompatibilityEnabled',
-    'math',
+    'texMathGfm',
+    'texMathDollars',
     'footnote',
     'frontMatter',
     'trimUnnecessaryCodeBlockEmptyLines',
+    'multilineBlockquote',
+    'githubAlerts',
 ]);
 
 function endpointPair(
@@ -166,9 +193,8 @@ export class Muya {
         });
     }
 
-    init() {
-        this.editor.init();
-
+    init(options: { focus?: boolean } = {}) {
+        this.editor.init(options);
         // UI plugins
         if (Muya.plugins.length) {
             for (const { plugin: Plugin, options: opts } of Muya.plugins)
@@ -244,12 +270,27 @@ export class Muya {
         this.editor.history.clear();
     }
 
+    /** Reveal an editor element before the host measures it for scrolling. */
+    revealElement(element: Element): void {
+        if (!this.domNode.contains(element))
+            return;
+        let target: Element | null = element;
+        while (target && target !== this.domNode) {
+            const block = getBlock(target);
+            if (block) {
+                revealBlock(block);
+                return;
+            }
+            target = target.parentElement;
+        }
+    }
+
     /**
      * Search value in current document.
      * @param {string} value
      * @param {object} opts
      */
-    search(value: string, opts = {}) {
+    search(value: string, opts: ISearchOption = {}) {
         return this.editor.searchModule.search(value, opts);
     }
 
@@ -261,7 +302,7 @@ export class Muya {
         return this.editor.searchModule.find(action);
     }
 
-    replace(replaceValue: string, opt = { isSingle: true, isRegexp: false }) {
+    replace(replaceValue: string, opt: IReplaceOption = { isSingle: true, isRegexp: false }) {
         return this.editor.searchModule.replace(replaceValue, opt);
     }
 
@@ -335,7 +376,6 @@ export class Muya {
         }
 
         applyAppearance(this.domNode, options);
-
         if (!forceRender)
             return;
 
@@ -350,6 +390,8 @@ export class Muya {
     private _forceRender() {
         const selection = this.editor.selection.getSelection();
         this.editor.scrollPage?.updateState(this.getState());
+
+        this.editor.searchModule.refresh();
 
         if (selection && selection.isSelectionInSameBlock) {
             const begin = Math.min(selection.anchor.offset, selection.focus.offset);
@@ -559,6 +601,14 @@ export class Muya {
     }
 
     /**
+     * The source text of the current text selection: blank lines between
+     * paragraphs, single newlines inside code, tables and tight lists.
+     */
+    getSelectedText(): string {
+        return this.editor.selection.getSelectedText();
+    }
+
+    /**
      * Whether the editor (or one of its descendants) currently holds focus.
      */
     hasFocus() {
@@ -654,10 +704,17 @@ export class Muya {
         return content?.outMostBlock ?? null;
     }
 
+    // The caret leaf's own block. For a table cell or code leaf that is the
+    // whole table or code-like block: the cell and the inner code node are not
+    // blocks in the document state, so nothing may be inserted beside them.
+    // Null while the caret caches still hold a block that left the document
+    // (e.g. undo removed it), as `_outmostBlockAtCursor` is (#5355).
     private _immediateBlockAtCursor(): Parent | null {
         const content = this.editor.activeContentBlock ?? this.editor.selection.anchorBlock;
+        if (!content?.outMostBlock)
+            return null;
 
-        return content?.parent ?? null;
+        return content.getAnchor() ?? null;
     }
 
     /**
@@ -812,6 +869,18 @@ export class Muya {
         place(container);
     }
 
+    private _getStateForWrapping(block: Parent): TState {
+        const state = block.getState();
+        if (state.name !== 'github-alert')
+            return state;
+        const marker = githubAlertMarker(state.meta);
+        const first = state.children[0];
+        const children = !state.meta.blankLineAfterMarker && first?.name === 'paragraph'
+            ? [{ ...first, text: `${marker}\n${first.text}` }, ...state.children.slice(1)]
+            : [{ name: 'paragraph' as const, text: marker }, ...state.children];
+        return { name: 'block-quote', children };
+    }
+
     /** Wrap the selected outmost blocks as items of a new list of `label`. */
     private _wrapSelectedBlocksInList(label: 'bullet-list' | 'order-list' | 'task-list') {
         const { bulletListMarker, orderListDelimiter, preferLooseListItem } = this.options;
@@ -825,8 +894,8 @@ export class Muya {
                 name: label,
                 meta,
                 children: blocks.map(b => label === 'task-list'
-                    ? { name: itemName, meta: { checked: false }, children: [b.getState()] }
-                    : { name: itemName, children: [b.getState()] }),
+                    ? { name: itemName, meta: { checked: false }, children: [this._getStateForWrapping(b)] }
+                    : { name: itemName, children: [this._getStateForWrapping(b)] }),
             }),
             container => this._selectWrappedContent(container),
         );
@@ -835,7 +904,7 @@ export class Muya {
     /** Wrap the selected outmost blocks into a single block-quote. */
     private _wrapSelectedBlocksInQuote() {
         this._wrapSelectedBlocks(
-            blocks => ({ name: 'block-quote', children: blocks.map(b => b.getState()) }),
+            blocks => ({ name: 'block-quote', children: blocks.map(block => this._getStateForWrapping(block)) }),
             container => this._selectWrappedContent(container),
         );
     }
@@ -845,7 +914,7 @@ export class Muya {
         this._wrapSelectedBlocks(
             blocks => ({
                 name: 'code-block',
-                meta: { type: 'fenced', lang: '' },
+                meta: { type: 'fenced', lang: '', fenceChar: '`' },
                 text: this.editor.jsonState
                     .getMarkdownFromState(blocks.map(b => b.getState()))
                     .replace(/\n+$/, ''),
@@ -883,7 +952,7 @@ export class Muya {
         const block = outMost
             ? this._outmostBlockAtCursor()
             : this._immediateBlockAtCursor();
-        if (!block)
+        if (!block || (location === 'before' && block.blockName === 'frontmatter'))
             return;
 
         const state = deepClone(emptyStates.paragraph);
@@ -926,9 +995,16 @@ export class Muya {
         cursorBlock?.setCursor(0, 0, true);
     }
 
-    createTable({ rows, columns }: { rows: number; columns: number }, { replace = false }: { replace?: boolean } = {}) {
-        const block = this._immediateBlockAtCursor();
-        if (!block)
+    /**
+     * Insert a table at `block` (default: the block holding the caret): in its
+     * place when it is empty or `replace` is set, otherwise directly below it.
+     * No-op when that block is no longer in the document.
+     */
+    createTable(
+        { rows, columns }: { rows: number; columns: number },
+        { replace = false, block = this._immediateBlockAtCursor() }: { replace?: boolean; block?: Parent | null } = {},
+    ) {
+        if (!block?.outMostBlock)
             return;
 
         const safeRows = Math.max(2, Number.isFinite(rows) ? Math.floor(rows) : 0);
@@ -953,7 +1029,7 @@ export class Muya {
         // An empty block is disposable, so replace it in place; a block with
         // real content is kept and the table goes directly below it. The picker
         // passes `replace` to always consume its trigger block.
-        if (replace || this._blockLeadingText(block).trim() === '')
+        if (replace || (!WHOLE_BLOCK_NAMES.has(block.blockName) && this._blockLeadingText(block).trim() === ''))
             block.replaceWith(newTable);
         else
             block.parent!.insertAfter(newTable, block);
@@ -1164,6 +1240,25 @@ export class Muya {
         return locateSentinelOffsets(sentinelMarkdown);
     }
 
+    private _handleGithubAlertParagraph(block: Parent, label: string | undefined): boolean {
+        if (!this.options.githubAlerts || !label)
+            return false;
+        if (label === 'paragraph' || label === 'block-quote') {
+            if (!canConvertGithubAlert(block, label))
+                return false;
+        }
+        else if (!label.startsWith('github-alert ')) {
+            return false;
+        }
+        const selection = this.editor.selection.getSelection();
+        const spansContainers = selection && selection.anchor.block.outMostBlock !== selection.focus.block.outMostBlock;
+        if (spansContainers && label === 'block-quote' && !githubAlertBlockType(block))
+            return false;
+        if (!spansContainers)
+            convertGithubAlert(block, label);
+        return true;
+    }
+
     /**
      * Convert the block at the cursor to another type. `type` uses the
      * paragraph-menu
@@ -1177,11 +1272,20 @@ export class Muya {
         if (!block)
             return;
 
+        const label = PARAGRAPH_LABEL_MAP[type];
+        if (this._handleGithubAlertParagraph(block, label))
+            return;
+
         if (this._handleCrossBlockParagraph(type))
             return;
 
+        // Only the paragraph or heading holding the caret changes level, even
+        // inside a list or quote; any other block at the caret is left as it is,
+        // as in muyajs (#5360).
         if (type === 'upgrade heading' || type === 'degrade heading') {
-            this._withPreservedOffset(() => this._changeHeadingLevel(block, type));
+            const target = this._immediateBlockAtCursor();
+            if (target && HEADING_LEVEL_BLOCK_NAMES.has(target.blockName))
+                this._withPreservedOffset(() => this._changeHeadingLevel(target, type));
             return;
         }
 
@@ -1198,7 +1302,6 @@ export class Muya {
             return;
         }
 
-        const label = PARAGRAPH_LABEL_MAP[type];
         if (!label)
             return;
 
@@ -1370,7 +1473,7 @@ export class Muya {
      */
     private _convertOrInsertBelow(label: string) {
         const immediate = this._immediateBlockAtCursor();
-        if (!immediate)
+        if (!immediate || WHOLE_BLOCK_NAMES.has(immediate.blockName))
             return;
 
         const leadingText = this._blockLeadingText(immediate);
@@ -1429,7 +1532,7 @@ export class Muya {
      */
     private _convertLeafToParagraph() {
         const leaf = this._immediateBlockAtCursor();
-        if (!leaf || leaf.blockName === 'paragraph')
+        if (!leaf || leaf.blockName === 'paragraph' || WHOLE_BLOCK_NAMES.has(leaf.blockName))
             return;
 
         this._withPreservedOffset(() => replaceBlockByLabel({
@@ -1491,7 +1594,7 @@ export class Muya {
     /** Cycle the heading level (marktext upgrade/degrade semantics). */
     private _changeHeadingLevel(block: Parent, type: 'upgrade heading' | 'degrade heading') {
         const state = block.getState();
-        const level = isAtxHeadingState(state) ? state.meta.level : 0;
+        const level = isAtxHeadingState(state) || isSetextHeadingState(state) ? state.meta.level : 0;
         let newLevel = level;
 
         if (type === 'upgrade heading' && level !== 1)

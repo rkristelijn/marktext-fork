@@ -16,7 +16,7 @@ import { MarkdownToHtml } from '../markdownToHtml';
 // rendering itself (and the `:has()` exclusion of loose items) is a CSS
 // concern verified in a real browser against the export stylesheet.
 
-const OPTS = { math: false, superSubScript: false, footnote: false, frontMatter: false };
+const OPTS = { texMathDollars: false, superSubScript: false, footnote: false, frontMatter: false };
 
 describe('#3676 — soft line breaks survive export as a conformant newline', () => {
     it('keeps a paragraph soft break as a newline, never a <br>', () => {
@@ -67,6 +67,7 @@ describe('softNewlineAsSpace export CSS', () => {
         expect(html).toContain('.markdown-body table {');
         expect(html).toContain('.markdown-body img[data-align=\'right\'] {');
         expect(html).toContain('.markdown-body li:has(input[type=\'checkbox\']) {');
+        expect(html).toContain('.markdown-body li input[type=\'checkbox\'] {');
         expect(html).toContain('.markdown-body div.mermaid,');
     });
 

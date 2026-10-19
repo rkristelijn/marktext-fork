@@ -20,24 +20,31 @@
         >
           <span>{{ file.filename }}</span>
           <span class="unsaved-dot" />
-          <el-icon
-            class="close-icon"
-            :size="12"
+          <button
+            type="button"
+            class="plain-button close-icon"
+            :aria-label="t('editor.tabs.close', { name: file.filename })"
             @click.stop="removeFileInTab(file)"
           >
-            <Close />
-          </el-icon>
+            <el-icon :size="12">
+              <Close />
+            </el-icon>
+          </button>
         </li>
       </ul>
     </div>
-    <div
-      class="new-file"
-      @click.stop="newFile()"
-    >
-      <el-icon :size="16">
-        <Plus />
-      </el-icon>
-    </div>
+    <icon-tooltip :content="t('menu.file.newTab')">
+      <button
+        type="button"
+        class="plain-button new-file"
+        :aria-label="t('menu.file.newTab')"
+        @click.stop="newFile()"
+      >
+        <el-icon :size="16">
+          <Plus />
+        </el-icon>
+      </button>
+    </icon-tooltip>
   </div>
 </template>
 
@@ -49,10 +56,13 @@ import { storeToRefs } from 'pinia'
 import autoScroll from 'dom-autoscroller'
 import dragula from 'dragula'
 import { Plus, Close } from '@element-plus/icons-vue'
+import { useI18n } from 'vue-i18n'
+import IconTooltip from '@/components/iconTooltip/index.vue'
 import { showContextMenu } from '../../contextMenu/tabs'
 import bus from '../../bus'
 import type { IFileState } from '@shared/types/files'
 
+const { t } = useI18n()
 const editorStore = useEditorStore()
 const layoutStore = useLayoutStore()
 
@@ -62,6 +72,11 @@ interface AutoScroller {
   readonly down: boolean
   destroy: (forceCleanAnimation?: boolean) => void
 }
+
+// Pointer travel, in CSS pixels, that separates a click from a tab drag.
+// Matches the platform drag thresholds (Blink 3px, Win32 SM_CXDRAG 4px) with a
+// little slack for trackpad drift.
+const DRAG_THRESHOLD_PX = 5
 
 const tabContainer = ref<HTMLElement | null>(null)
 const tabDropContainer = ref<HTMLElement | null>(null)
@@ -204,7 +219,14 @@ onMounted(() => {
     direction: 'horizontal',
     revertOnSpill: true,
     mirrorContainer: tabDropContainer.value,
-    ignoreInputTextSelection: false
+    ignoreInputTextSelection: false,
+    // dragula's own default is 0, i.e. a single pixel of pointer drift between
+    // press and release turns a click into a drag. The drag then swallows the
+    // `click` entirely — its mirror element takes the mouseup and is removed
+    // before the browser can retarget — so `selectFile` never runs and the tab
+    // refuses to activate (#4895). Require a deliberate movement instead.
+    slideFactorX: DRAG_THRESHOLD_PX,
+    slideFactorY: DRAG_THRESHOLD_PX
   }).on('drop', (el, _target, _source, sibling) => {
     // Current tab that was dropped and need to be reordered.
     const droppedId = el?.getAttribute('data-id')
@@ -261,8 +283,11 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+/* The padding widens the hit area and keeps the inset focus ring off the
+   glyph; the negative margin keeps the tab as wide as before. */
 .close-icon {
-  cursor: pointer;
+  padding: 2px;
+  margin: 0 -2px;
   transition: opacity 0.15s ease-in-out;
 }
 
@@ -324,10 +349,12 @@ onBeforeUnmount(() => {
     &:hover {
       background: var(--floatBgColor) !important;
     }
-    &:hover > .close-icon {
+    &:hover > .close-icon,
+    & > .close-icon:focus-visible {
       opacity: 1;
     }
-    &:hover > .unsaved-dot {
+    &:hover > .unsaved-dot,
+    &:focus-within > .unsaved-dot {
       display: none;
     }
     & > span {
@@ -352,10 +379,12 @@ onBeforeUnmount(() => {
     & > .unsaved-dot {
       display: block;
     }
-    &:hover > .close-icon {
+    &:hover > .close-icon,
+    & > .close-icon:focus-visible {
       opacity: 1;
     }
-    &:hover > .unsaved-dot {
+    &:hover > .unsaved-dot,
+    &:focus-within > .unsaved-dot {
       display: none;
     }
   }
@@ -391,7 +420,8 @@ onBeforeUnmount(() => {
   cursor: pointer;
   color: var(--editorColor50);
   opacity: 0;
-  &.always-visible {
+  &.always-visible,
+  &:focus-visible {
     opacity: 1;
   }
 }

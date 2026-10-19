@@ -6,6 +6,7 @@ import { getCursorReference } from '../selection';
 import { isParagraphState } from '../state/types';
 import { deepClone } from '../utils';
 import logger from '../utils/logger';
+import { canConvertGithubAlert, convertGithubAlert } from './githubAlerts';
 import { ScrollPage } from './scrollPage';
 
 const debug = logger('quickInsert:');
@@ -68,19 +69,34 @@ export function insertFrontMatterAtStart(muya: Muya): boolean {
  *
  * The float anchors to the caret (`getCursorReference`); when the cursor has
  * no coords (e.g. the front-menu took focus) it falls back to the block's DOM
- * node. No-op if neither is available.
+ * node. No-op if neither is available, or if the block is no longer in the
+ * document.
  */
 export function showTablePicker(muya: Muya, block: Parent) {
     const { eventCenter } = muya;
     const reference = getCursorReference() ?? block.domNode;
-    if (!reference)
+    if (!reference || !block.outMostBlock)
         return;
 
+    // The `/` query the grid was opened on, or '' for the front-menu's empty
+    // paragraph.
+    const triggerText = block.firstContentInDescendant()?.text ?? '';
+
     const handler = (row: number, column: number) => {
+        // The grid stays open while typing, undo and redo change the document,
+        // so a pick acts on the line that opened it only while that line is
+        // still in the document holding the text it had then, or nothing
+        // (#5355). Any other pick is ignored and changes nothing at all: it
+        // used to replace whichever block held the caret, or throw on a block
+        // undo had removed.
+        const text = block.firstContentInDescendant()?.text ?? '';
+        if (!block.outMostBlock || (text !== triggerText && text.trim() !== ''))
+            return;
+
         // The picker's trigger block (a `/table` quick-insert line or the empty
         // paragraph the front-menu offers) is disposable, so always replace it
         // rather than inserting the table below it.
-        muya.createTable({ rows: row + 1, columns: column + 1 }, { replace: true });
+        muya.createTable({ rows: row + 1, columns: column + 1 }, { replace: true, block });
     };
 
     eventCenter.emit('muya-table-picker', { row: -1, column: -1 }, reference, handler);
@@ -113,7 +129,9 @@ function buildHeadingBlock(label: string, muya: Muya, text: string) {
 
     const [blockName, level] = label.split(' ');
     headingState.meta.level = +level;
-    headingState.text = `${'#'.repeat(+level)} ${text}`;
+    // An ATX heading is a single line; a newline left in its text is dropped
+    // with everything after it when the document is saved (#5366).
+    headingState.text = `${'#'.repeat(+level)} ${text.replace(/\n/g, ' ')}`;
 
     return ScrollPage.loadBlock(blockName).create(muya, headingState);
 }
@@ -134,7 +152,8 @@ function buildListBlock(label: 'bullet-list' | 'task-list', muya: Muya, text: st
     const { preferLooseListItem, bulletListMarker } = muya.options;
     const listState = deepClone(emptyStates[label]);
     listState.meta.loose = preferLooseListItem;
-    listState.meta.marker = bulletListMarker;
+    if ('marker' in listState.meta)
+        listState.meta.marker = bulletListMarker;
     const firstChild = listState.children[0].children[0];
     if (text && isParagraphState(firstChild))
         firstChild.text = text;
@@ -160,7 +179,20 @@ function buildDiagramBlock(label: string, muya: Muya) {
     return ScrollPage.loadBlock(name).create(muya, diagramState);
 }
 
+// A display-math block serializes to `$$…$$`, which this editor no longer reads
+// back once pandoc's tex_math_dollars is off. The single source of truth for
+// "may this block be offered and built at all", consulted by every menu that
+// lists blocks and by the builder every insertion path funnels through (#5446).
+export function canInsertLabel(label: string, muya: Muya): boolean {
+    if (label.startsWith('github-alert '))
+        return muya.options.githubAlerts;
+    return label !== 'math-block' || muya.options.texMathDollars;
+}
+
 export function buildReplacementBlock(label: string, muya: Muya, text: string) {
+    if (!canInsertLabel(label, muya))
+        return null;
+
     if (label.startsWith('atx-heading '))
         return buildHeadingBlock(label, muya, text);
     if (label.startsWith('diagram '))
@@ -200,6 +232,11 @@ export function replaceBlockByLabel({ block, muya, label, text = '' }: {
     label: string;
     text?: string;
 }) {
+    if (label.startsWith('github-alert ') || (['block-quote', 'github-alert'].includes(block.blockName) && muya.options.githubAlerts && (label === 'paragraph' || label === 'block-quote'))) {
+        convertGithubAlert(block, label, text);
+        return;
+    }
+
     // Front matter is only valid as the document's first block, so the
     // quick-insert "Front Matter" entry must NOT replace the cursor block in
     // place (which destroyed its content and produced invalid mid-document
@@ -233,6 +270,10 @@ export function replaceBlockByLabel({ block, muya, label, text = '' }: {
     }
 
     const newBlock = buildReplacementBlock(label, muya, text);
+    // An unknown label, or one an option has switched off, yields nothing —
+    // leave the block the user was on alone rather than replacing it with null.
+    if (!newBlock)
+        return;
 
     block.replaceWith(newBlock);
     finishInsertedBlock(newBlock, muya, label);
@@ -288,6 +329,11 @@ export function insertBlockBelowByLabel({ block, muya, label }: {
 // must stay in sync with `MENU_CONFIG`'s labels and `PARAGRAPH_LABEL_MAP`.
 export function canTurnInto(block: Parent, label: string): boolean {
     const { blockName } = block;
+    if (label.startsWith('github-alert ') || (['block-quote', 'github-alert'].includes(blockName) && block.muya.options.githubAlerts))
+        return canConvertGithubAlert(block, label);
+
+    if (!canInsertLabel(label, block.muya))
+        return false;
 
     switch (blockName) {
         case 'paragraph': {

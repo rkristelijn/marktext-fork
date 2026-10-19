@@ -8,7 +8,9 @@ import type {
   IpcSendChannels,
   IpcSyncChannels,
   IpcMainEventChannels,
-  BootInfo
+  BootInfo,
+  PlantumlFetchResult,
+  SaveDialogRequest
 } from '@shared/types/ipc'
 import type { MenuTemplate, MenuPopupPosition } from '@shared/types/menu'
 import type { SerializedStat } from '@shared/types/files'
@@ -52,6 +54,11 @@ declare global {
     writeText(text: string): void
     readText(): Promise<string>
     guessFilePath(): Promise<string | null>
+    writeImage(png: Uint8Array): Promise<boolean>
+  }
+
+  interface ElectronDialogAPI {
+    showSave(request: SaveDialogRequest): Promise<string | null>
   }
 
   interface ElectronWebFrameAPI {
@@ -81,6 +88,7 @@ declare global {
     ipcRenderer: ElectronIpcRenderer
     shell: ElectronShellAPI
     clipboard: ElectronClipboardAPI
+    fetchLinkHtml(url: string): Promise<string>
     webFrame: ElectronWebFrameAPI
     webUtils: ElectronWebUtilsAPI
     process: {
@@ -94,6 +102,15 @@ declare global {
     paths: Partial<BootInfo['paths']>
     isUpdatable: boolean
     windowControl: ElectronWindowControlAPI
+    dialog: ElectronDialogAPI
+  }
+
+  interface DiagramAPI {
+    fetchPlantuml(
+      server: string,
+      encoded: string,
+      format: 'svg' | 'png'
+    ): Promise<PlantumlFetchResult>
   }
 
   interface FileUtilsAPI {
@@ -101,6 +118,7 @@ declare global {
     isDirectory(p: string): Promise<boolean>
     emptyDir(p: string): Promise<void>
     copy(src: string, dest: string): Promise<void>
+    copyWithContentHash(src: string, outputDir: string): Promise<string>
     ensureDir(p: string): Promise<void>
     outputFile(p: string, data: string | Uint8Array): Promise<void>
     move(src: string, dest: string): Promise<void>
@@ -184,6 +202,7 @@ declare global {
     ripgrep: RipgrepAPI
     uploader: UploaderAPI
     fonts: FontsAPI
+    diagram: DiagramAPI
     process: ProcessShim
     rgPath: string
     // Set by the legacy editor store at runtime; consumed by muya internals.

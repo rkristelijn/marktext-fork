@@ -1,5 +1,5 @@
 import path from 'path'
-import type { BrowserWindow } from 'electron'
+import { app, type BrowserWindow } from 'electron'
 import { TypedEmitter } from '@shared/types/typedEmitter'
 import type Accessor from '../app/accessor'
 import { getThemeBackgroundColor } from '../../common/theme'
@@ -85,6 +85,11 @@ class BaseWindow extends TypedEmitter<BaseWindowEvents> {
     if (!win) return
     if (win.isMinimized()) win.restore()
     if (!win.isVisible()) win.show()
+    // Window focus alone does not activate a background app on macOS.
+    if (process.platform === 'darwin') {
+      app.show()
+      app.focus({ steal: true })
+    }
     win.focus()
     win.moveTop()
   }
@@ -118,10 +123,11 @@ class BaseWindow extends TypedEmitter<BaseWindowEvents> {
     const { codeFontFamily, codeFontSize, hideScrollbar, theme, titleBarStyle } =
       userPreference.getAll()
 
-    const baseUrl =
-      process.env.NODE_ENV === 'development'
-        ? process.env['ELECTRON_RENDERER_URL']!
-        : `file://${path.join(__dirname, '../renderer/index.html')}` // <-- This points to the path inside the packed ASAR archive, hence it is always correct
+    // Decided at build time: a NODE_ENV inherited from the user's environment
+    // must not point a built app at the dev server URL (#5053).
+    const baseUrl = import.meta.env.DEV
+      ? process.env['ELECTRON_RENDERER_URL']!
+      : `file://${path.join(__dirname, '../renderer/index.html')}` // <-- This points to the path inside the packed ASAR archive, hence it is always correct
 
     const url = new URL(baseUrl)
     url.searchParams.set('udp', paths.userDataPath)
